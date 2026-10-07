@@ -5,7 +5,7 @@
   "type": "module",
   "description": "Advisory decisions through neutral context and Jev or Clef",
   "pi": { "extensions": ["./magic8ball.ts"] },
-  "files": ["magic8ball.ts", "lib", "README.md", "docs"],
+  "files": ["magic8ball.ts", "lib", "scripts", "README.md", "docs"],
   "engines": { "node": ">=24" },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",
@@ -19,7 +19,16 @@
     "@earendil-works/pi-tui": { "optional": true },
     "typebox": { "optional": true }
   },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "1.0.4",
+    "@earendil-works/pi-ai": "1.0.4",
+    "@earendil-works/pi-tui": "1.0.4",
+    "typebox": "1.3.27",
+    "typescript": "5.9.3",
+    "@types/node": "26.6.4"
+  },
   "scripts": {
+    "benchmark": "node scripts/benchmark.mjs",
     "check": "node --test tests/*.test.mjs",
     "typecheck": "tsc --noEmit",
     "verify": "npm run typecheck && npm run check"

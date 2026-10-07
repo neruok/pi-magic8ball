@@ -2,42 +2,52 @@ import { Type } from 'typebox';
 import type { Api, ClassifierApi, ClassifierModel, JsonValue, Model, Tool } from '@earendil-works/pi-ai';
 import { getAgentDir, type ExtensionAPI, type ExtensionToolContext } from '@earendil-works/pi-coding-agent';
 import { buildState } from './lib/builder.ts';
-import { decide, DecisionError, readConfig, type DecisionDependencies } from './lib/decision.ts';
+import { decide, DecisionError, EVIDENCE_FAILURE_CODES, LIMITS, REASONING_LEVELS, isEvidenceFailureCode, readConfig, type BuilderReasoning, type DecisionDependencies } from './lib/decision.ts';
+import { renderDecision, renderQuestion } from './lib/render.ts';
 import { evidence } from './lib/evidence.ts';
 import { loadSettings, settingsPaths } from './lib/settings.ts';
 import { registerSettingsCommand } from './lib/settings-command.ts';
+import { TranscriptStore, type TranscriptRecorder } from './lib/transcripts.ts';
+import { assertReasoning } from './lib/reasoning.ts';
 
 const text = Type.String({ minLength: 1 });
 const strings = Type.Array(text);
 const StateSchema = Type.Object({ goal: text, constraints: strings, current_state: strings, evidence: Type.Array(Type.Object({ fact: text, source: text }, { additionalProperties: false })), uncertainties: strings }, { additionalProperties: false });
+const RangeSchema = Type.Object({ start: Type.Integer({ minimum: 0 }), end: Type.Integer({ minimum: 0 }), totalBytes: Type.Integer({ minimum: 0 }) }, { additionalProperties: false });
+const CollectedSchema = Type.Object({ id: text, scope: Type.Union([Type.Literal('workspace'), Type.Literal('conversation')]), source: text, truncated: Type.Boolean(), range: Type.Optional(RangeSchema), code: Type.Optional(Type.Literal('path-not-found')) }, { additionalProperties: false });
 const ModelSchema = Type.Object({ provider: text, model: text }, { additionalProperties: false });
+const BuilderModelSchema = Type.Object({ provider: text, model: text, reasoning: Type.Optional(Type.Union(REASONING_LEVELS.map(level => Type.Literal(level)))) }, { additionalProperties: false });
 const UsageSchema = Type.Object({ input: Type.Number(), output: Type.Number(), cacheRead: Type.Number(), cacheWrite: Type.Number(), totalTokens: Type.Number(), cost: Type.Object({ input: Type.Number(), output: Type.Number(), cacheRead: Type.Number(), cacheWrite: Type.Number(), total: Type.Number() }) });
 const OutputSchema = Type.Union([
-  Type.Object({ ok: Type.Literal(true), answer: text, probabilities: Type.Record(Type.String(), Type.Number({ minimum: 0, maximum: 1 })), confidence: Type.Number({ minimum: 0, maximum: 1 }), abstained: Type.Boolean(), advisory: Type.Literal(true), confidenceMeaning: text, state: StateSchema, models: Type.Object({ builder: ModelSchema, classifier: ModelSchema }), collection: Type.Object({ conversationTruncated: Type.Boolean(), evidenceCalls: Type.Integer(), sources: strings }), usage: UsageSchema }, { additionalProperties: false }),
-  Type.Object({ ok: Type.Literal(false), error: Type.Object({ kind: text, message: text }), usage: UsageSchema }, { additionalProperties: false })
+  Type.Object({ ok: Type.Literal(true), answer: text, probabilities: Type.Record(Type.String(), Type.Number({ minimum: 0, maximum: 1 })), confidence: Type.Number({ minimum: 0, maximum: 1 }), abstained: Type.Boolean(), advisory: Type.Literal(true), confidenceMeaning: text, state: StateSchema, models: Type.Object({ builder: BuilderModelSchema, classifier: ModelSchema }), collection: Type.Object({ conversationTruncated: Type.Boolean(), evidenceCalls: Type.Integer(), sources: strings, evidence: Type.Array(CollectedSchema) }), usage: UsageSchema }, { additionalProperties: false }),
+  Type.Object({ ok: Type.Literal(false), error: Type.Object({ kind: text, code: text, stage: Type.Union([Type.Literal('preparation'), Type.Literal('collection'), Type.Literal('validation'), Type.Literal('classification')]), message: text, evidenceCode: Type.Optional(Type.Union(EVIDENCE_FAILURE_CODES.map(code => Type.Literal(code)))) }), usage: UsageSchema }, { additionalProperties: false })
 ]);
 const InputSchema = Type.Object({
   question: text,
   responses: Type.Record(Type.String(), text, { minProperties: 2, maxProperties: 26, description: 'Response identifiers mapped to mandatory descriptions. Default abstention reserves one of 26 choices.' }),
   abstain: Type.Optional(Type.Boolean({ description: 'Add insufficient_evidence. Default true.' })),
-  context: Type.Optional(Type.Object({ conversation: Type.Optional(Type.Boolean({ description: 'Share bounded conversation text. Default true.' })), workspace: Type.Optional(Type.Boolean({ description: 'Permit bounded workspace reads. Default true.' })) }, { additionalProperties: false }))
+  context: Type.Optional(Type.Object({ conversation: Type.Optional(Type.Boolean({ description: 'Share bounded conversation text. Default true.' })), workspace: Type.Optional(Type.Boolean({ description: 'Permit bounded workspace reads. Default true.' })), files: Type.Optional(Type.Array(text, { maxItems: 8, uniqueItems: true, description: 'Optional workspace-relative file hints. These guide collection, not permissions. Requires workspace scope.' })) }, { additionalProperties: false }))
 }, { additionalProperties: false });
 
+const byteRangeParameters = { byteOffset: Type.Optional(Type.Integer({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER })), byteLength: Type.Optional(Type.Integer({ minimum: 1, maximum: LIMITS.evidenceBytes })) };
 const EVIDENCE_TOOLS = [
-  { operation: 'read', name: 'magic8ball_read', description: 'Read one workspace text file. Reject hidden paths, credential names, symlinks, external paths and special files. Inspect only the first 16000 bytes. Return at most 200 numbered lines.', parameters: Type.Object({ path: text, offset: Type.Optional(Type.Integer({ minimum: 1 })), limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 200 })) }, { additionalProperties: false }) },
-  { operation: 'list', name: 'magic8ball_list', description: 'List one workspace directory, without recursion. Inspect at most 200 entries and omit hidden paths, credential names, node_modules, symlinks and special files.', parameters: Type.Object({ path: Type.Optional(text) }, { additionalProperties: false }) },
-  { operation: 'search', name: 'magic8ball_search', description: 'Search for literal text in the first 16000 bytes of one permitted workspace file. Return at most 200 numbered matching lines. No regular expressions or recursive scan.', parameters: Type.Object({ path: text, text }, { additionalProperties: false }) }
+  { operation: 'read', name: 'magic8ball_read', description: 'Read one workspace text file. Reject hidden paths, credential names, symlinks, external paths and special files. Inspect at most 16000 bytes in the requested byte window (default offset 0). Line numbers and line offsets are window-relative. Return the inspected range and at most 200 lines. Permitted missing paths return a path-not-found observation.', parameters: Type.Object({ path: text, offset: Type.Optional(Type.Integer({ minimum: 1 })), limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 200 })), ...byteRangeParameters }, { additionalProperties: false }) },
+  { operation: 'list', name: 'magic8ball_list', description: 'List one workspace directory, without recursion. Inspect at most 200 entries and omit hidden paths, credential names, node_modules, symlinks and special files. Missing permitted directories return path-not-found; use returned names before dependent child calls.', parameters: Type.Object({ path: Type.Optional(text) }, { additionalProperties: false }) },
+  { operation: 'search', name: 'magic8ball_search', description: 'Search literal text in a byte window of at most 16000 bytes (default offset 0) of one permitted file. Line numbers are window-relative. Return the inspected range and at most 200 matching lines. No regex or recursive scan. Permitted missing paths return a path-not-found observation.', parameters: Type.Object({ path: text, text, ...byteRangeParameters }, { additionalProperties: false }) }
 ];
 
-function dependencies(ctx: ExtensionToolContext): DecisionDependencies {
+function dependencies(ctx: ExtensionToolContext, transcript?: TranscriptRecorder): DecisionDependencies {
   let builder: Model<Api> | undefined;
   let classifier: ClassifierModel<ClassifierApi> | undefined;
+  let reasoning: BuilderReasoning | undefined;
   return {
     async prepare() {
       const models = readConfig((await loadSettings(settingsPaths(ctx.cwd, getAgentDir()), ctx.isProjectTrusted())).settings);
       builder = ctx.modelRegistry.find(models.builder.provider, models.builder.model);
       classifier = ctx.modelRegistry.findOfType('classifier', models.classifier.provider, models.classifier.model);
       if (!builder || builder.api === 'pi-virtual' || !classifier) throw new DecisionError('model-unavailable');
+      reasoning = models.builder.reasoning;
+      assertReasoning(builder, reasoning);
       return models;
     },
     async build(request, signal, recordUsage) {
@@ -46,7 +56,15 @@ function dependencies(ctx: ExtensionToolContext): DecisionDependencies {
       return buildState(request, {
         tools: EVIDENCE_TOOLS.map(({ name, description, parameters }) => ({ name, description, parameters })) as Tool[],
         conversation: request.context.conversation ? ctx.sessionManager.buildSessionProjection().messages : [],
-        complete: (context, _signal, options) => ctx.modelRegistry.streamSimple(selected, context, options).result(),
+        reasoning,
+        recordEvidence: message => transcript?.evidenceResult(message),
+        recordFailure: (name, id, code) => transcript?.evidenceFailure(name, id, code),
+        complete: async (context, _signal, options) => {
+          transcript?.builderRequest({ provider: selected.provider, model: selected.id }, context, options, reasoning ?? 'default');
+          const message = await ctx.modelRegistry.streamSimple(selected, context, options).result();
+          transcript?.builderResponse(message);
+          return message;
+        },
         executeTool: async (name, args, signal) => {
           const outcome = await ctx.executeTool(name, args, { signal });
           return { ...outcome.result, isError: outcome.isError };
@@ -55,21 +73,34 @@ function dependencies(ctx: ExtensionToolContext): DecisionDependencies {
     },
     async classify(request, state, signal) {
       if (!classifier) throw new DecisionError('model-unavailable');
-      return ctx.modelRegistry.classify(classifier, { state, questions: { decision: { type: 'choice', instructions: request.question, criteria: request.responses } } }, { signal, maxRetries: 0 });
+      const context = { state, questions: { decision: { type: 'choice' as const, instructions: request.question, criteria: request.responses } } };
+      transcript?.classifierRequest({ provider: classifier.provider, model: classifier.id }, context);
+      const result = await ctx.modelRegistry.classify(classifier, context, { signal, maxRetries: 0 });
+      transcript?.classifierResponse(result);
+      return result;
     }
   };
 }
 
 export default function magic8ball(pi: ExtensionAPI): void {
-  registerSettingsCommand(pi);
+  const transcripts = new TranscriptStore();
+  const setCompletionContext = registerSettingsCommand(pi, transcripts);
+  pi.on('session_start', (_event, ctx) => { transcripts.reset(); setCompletionContext(ctx); });
+  pi.on('session_shutdown', () => { transcripts.reset(); setCompletionContext(); });
   for (const tool of EVIDENCE_TOOLS) {
     pi.registerTool({
       name: tool.name, label: tool.name, description: tool.description, parameters: tool.parameters,
       exposure: 'codemode', namespace: { name: 'magic8ball-evidence', description: 'Bounded read-only workspace evidence tools for the decision-context builder.' },
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       async execute(_id, args, signal, _update, ctx) {
-        const result = await evidence(ctx.cwd, tool.operation, args, signal);
-        return { content: [{ type: 'text', text: JSON.stringify(result) }], details: result };
+        try {
+          const result = await evidence(ctx.cwd, tool.operation, args, signal);
+          return { content: [{ type: 'text', text: JSON.stringify(result) }], details: result };
+        } catch (error) {
+          if (!(error instanceof DecisionError) || !isEvidenceFailureCode(error.evidenceCode)) throw error;
+          const result = { code: error.evidenceCode, text: error.message, truncated: false };
+          return { content: [{ type: 'text', text: JSON.stringify(result) }], details: result, isError: true };
+        }
       }
     });
   }
@@ -79,8 +110,14 @@ export default function magic8ball(pi: ExtensionAPI): void {
     promptGuidelines: ['Treat magic8ball results as advisory evidence. You remain responsible for decisions and authorization.'],
     parameters: InputSchema, outputSchema: OutputSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: true },
-    async execute(_id, args, signal, _update, ctx) {
-      const result = await decide(args, dependencies(ctx), signal ?? ctx.signal);
+    renderCall: (args, theme) => renderQuestion(args.question, text => theme.fg('accent', text)),
+    renderResult: (result, options, theme) => renderDecision(result.details, options.expanded, options.isPartial, text => theme.fg('toolOutput', text)),
+    async execute(_id, args, signal, update, ctx) {
+      const transcript = transcripts.begin(_id);
+      const result = await decide(args, dependencies(ctx, transcript), signal ?? ctx.signal, LIMITS.timeoutMs, progress => {
+        update?.({ content: [{ type: 'text', text: `Magic 8-ball: ${progress.stage}` }], details: progress });
+      });
+      transcript?.finish(result);
       return { content: [{ type: 'text', text: JSON.stringify(result) }], structuredContent: result as unknown as JsonValue, details: result, isError: !result.ok, usage: result.usage };
     }
   });

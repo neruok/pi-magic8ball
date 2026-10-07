@@ -10,9 +10,9 @@ const { SessionManager } = await import(new URL('./core/session-manager.js', piE
 import { Compile } from 'typebox/compile';
 
 const envNames = ['PI_CODING_AGENT_DIR'];
-const state = { goal: 'Add a tool', constraints: [], current_state: [], evidence: [{ fact: 'Fixture exists', source: 'README.md' }], uncertainties: [] };
+const state = { goal: 'Add a tool', constraints: [], current_state: [], evidence: [{ fact: 'Fixture exists', source: 'e1' }], uncertainties: [] };
 const usage = { input: 10, output: 2, cacheRead: 0, cacheWrite: 0, totalTokens: 12, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
-function registrations() { const tools = new Map(); extension({ registerTool: t => tools.set(t.name, t), registerCommand: () => {} }); return tools; }
+function registrations() { const tools = new Map(); extension({ on() {}, registerTool: t => tools.set(t.name, t), registerCommand: () => {} }); return tools; }
 
 test('AC-6 registers advisory model-only tool and inactive readonly evidence schemas', () => {
   const tools = registrations(); assert.equal(tools.size, 4);
@@ -21,7 +21,7 @@ test('AC-6 registers advisory model-only tool and inactive readonly evidence sch
   assert.equal(Compile(main.parameters).Check({ question: 'Q', responses: { a: 'A', b: 'B' }, context: { web: true } }), false);
 });
 
-test('AC-5 AC-6 host-selected Jev and Clef use Pi classifier API, nested hooks and aggregate usage', async t => {
+test('AC-5 AC-6 AC-13 host-selected Jev and Clef use Pi classifier API, nested hooks and aggregate usage', async t => {
   const dir = await mkdtemp(join(tmpdir(), 'magic8ball-extension-')); t.after(() => rm(dir, { recursive: true, force: true })); await writeFile(join(dir, 'README.md'), 'Fixture exists');
   const saved = Object.fromEntries(envNames.map(n => [n, process.env[n]])); t.after(() => { for (const n of envNames) saved[n] === undefined ? delete process.env[n] : process.env[n] = saved[n]; });
   process.env.PI_CODING_AGENT_DIR = dir;

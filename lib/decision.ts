@@ -1,8 +1,14 @@
-import type { Usage } from '@earendil-works/pi-ai';
+import type { ModelThinkingLevel, Usage } from '@earendil-works/pi-ai';
+import { permittedFilePath } from './paths.ts';
 
 export const LIMITS = Object.freeze({ requestBytes: 16000, stateBytes: 12000, conversationBytes: 24000, evidenceBytes: 16000, builderRequests: 4, evidenceCalls: 8, outputTokens: 2048, timeoutMs: 120000 });
 export const ABSTENTION = 'insufficient_evidence';
-export type ErrorKind = 'invalid-input' | 'invalid-state' | 'invalid-answer' | 'invalid-config' | 'settings-unavailable' | 'not-configured' | 'model-unavailable' | 'builder-failed' | 'classifier-failed' | 'evidence-failed' | 'budget-exhausted' | 'cancelled' | 'timeout';
+export const REASONING_LEVELS = ['default', 'off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
+export type BuilderReasoning = 'default' | ModelThinkingLevel;
+export const EVIDENCE_FAILURE_CODES = ['invalid-arguments', 'path-denied', 'wrong-type', 'invalid-text', 'permission-denied', 'io-failed', 'tool-denied-or-failed'] as const;
+export type EvidenceFailureCode = typeof EVIDENCE_FAILURE_CODES[number];
+export function isEvidenceFailureCode(value: unknown): value is EvidenceFailureCode { return typeof value === 'string' && EVIDENCE_FAILURE_CODES.includes(value as EvidenceFailureCode); }
+export type ErrorKind = 'invalid-input' | 'invalid-state' | 'invalid-answer' | 'invalid-config' | 'settings-unavailable' | 'not-configured' | 'model-unavailable' | 'unsupported-reasoning' | 'builder-failed' | 'classifier-failed' | 'evidence-failed' | 'budget-exhausted' | 'cancelled' | 'timeout';
 const MESSAGES: Record<ErrorKind, string> = {
   'invalid-input': 'Invalid magic8ball input. Check response descriptions, identifiers, scopes, counts, and size.',
   'invalid-state': 'The context builder did not return valid neutral state within the size limit.',
@@ -11,6 +17,7 @@ const MESSAGES: Record<ErrorKind, string> = {
   'invalid-config': 'Invalid magic8ball.json. Check JSON, complete provider/model pairs, fields, and size.',
   'settings-unavailable': 'Cannot safely access magic8ball settings. Inspect /magic8ball show and the settings paths before retrying.',
   'model-unavailable': 'A configured model is not available in the Pi catalog.',
+  'unsupported-reasoning': 'The configured builder reasoning level is unsupported. Use /magic8ball reasoning to inspect supported levels.',
   'builder-failed': 'The context builder failed. No classification was attempted.',
   'classifier-failed': 'The classifier failed. No decision is available.',
   'evidence-failed': 'An evidence call failed or was denied. No classification was attempted.',
@@ -19,19 +26,24 @@ const MESSAGES: Record<ErrorKind, string> = {
 };
 export class DecisionError extends Error {
   readonly kind: ErrorKind;
-  constructor(kind: ErrorKind) { super(MESSAGES[kind]); this.kind = kind; }
+  readonly evidenceCode?: EvidenceFailureCode;
+  constructor(kind: ErrorKind, evidenceCode?: EvidenceFailureCode) { super(MESSAGES[kind]); this.kind = kind; this.evidenceCode = evidenceCode; }
 }
-export type DecisionRequest = { question: string; responses: Record<string, string>; abstain: boolean; context: { conversation: boolean; workspace: boolean } };
+export type DecisionRequest = { question: string; responses: Record<string, string>; abstain: boolean; context: { conversation: boolean; workspace: boolean; files?: string[] } };
 export type DecisionState = { goal: string; constraints: string[]; current_state: string[]; evidence: { fact: string; source: string }[]; uncertainties: string[] };
-export type ModelSelection = { builder: { provider: string; model: string }; classifier: { provider: string; model: string } };
-export type Collection = { conversationTruncated: boolean; evidenceCalls: number; sources: string[] };
+export type ModelSelection = { builder: { provider: string; model: string; reasoning?: BuilderReasoning }; classifier: { provider: string; model: string } };
+export type ByteRange = { start: number; end: number; totalBytes: number };
+export type CollectedEvidence = { id: string; scope: 'conversation' | 'workspace'; source: string; truncated: boolean; range?: ByteRange; code?: 'path-not-found' };
+export type Collection = { conversationTruncated: boolean; evidenceCalls: number; sources: string[]; evidence: CollectedEvidence[] };
+export type DecisionStage = 'preparation' | 'collection' | 'validation' | 'classification';
+export type DecisionProgress = { stage: DecisionStage };
 export type RecordUsage = (usage?: Partial<Usage>) => void;
 export type DecisionDependencies = {
   prepare(): Promise<ModelSelection>;
   build(request: DecisionRequest, signal: AbortSignal, recordUsage: RecordUsage): Promise<{ text: string; collection: Collection }>;
   classify(request: DecisionRequest, state: DecisionState, signal: AbortSignal): Promise<unknown>;
 };
-export type DecisionResult = ({ ok: true; answer: string; probabilities: Record<string, number>; confidence: number; abstained: boolean; advisory: true; confidenceMeaning: string; state: DecisionState; models: ModelSelection; collection: Collection } | { ok: false; error: { kind: ErrorKind; message: string } }) & { usage: Usage };
+export type DecisionResult = ({ ok: true; answer: string; probabilities: Record<string, number>; confidence: number; abstained: boolean; advisory: true; confidenceMeaning: string; state: DecisionState; models: ModelSelection; collection: Collection } | { ok: false; error: { kind: ErrorKind; code: ErrorKind; stage: DecisionStage; message: string; evidenceCode?: EvidenceFailureCode } }) & { usage: Usage };
 
 export function object(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value) && [Object.prototype, null].includes(Object.getPrototypeOf(value));
@@ -54,14 +66,19 @@ export function validateRequest(input: unknown): DecisionRequest {
   for (const [key, value] of entries) {
     if (!/^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(key) || ['__proto__', 'constructor', 'prototype', ABSTENTION].includes(key) || !nonempty(value)) return bad();
   }
-  const context = { conversation: true, workspace: true };
+  const context: DecisionRequest['context'] = { conversation: true, workspace: true };
   if (Object.hasOwn(input, 'context')) {
-    if (!object(input.context) || !exactKeys(input.context, ['conversation', 'workspace'], [])) return bad();
+    if (!object(input.context) || !exactKeys(input.context, ['conversation', 'workspace', 'files'], [])) return bad();
     for (const key of ['conversation', 'workspace'] as const) {
       if (Object.hasOwn(input.context, key)) {
         if (typeof input.context[key] !== 'boolean') return bad();
         context[key] = input.context[key];
       }
+    }
+    if (Object.hasOwn(input.context, 'files')) {
+      const files = input.context.files;
+      if (!Array.isArray(files) || files.length > LIMITS.evidenceCalls || !files.every(permittedFilePath) || new Set(files).size !== files.length || (!context.workspace && files.length > 0)) return bad();
+      context.files = [...files];
     }
   }
   const responses = Object.fromEntries(entries) as Record<string, string>;
@@ -69,7 +86,7 @@ export function validateRequest(input: unknown): DecisionRequest {
   return { question: input.question, responses, abstain, context };
 }
 
-export function parseState(text: string): DecisionState {
+export function parseState(text: string, sourceIds?: readonly string[]): DecisionState {
   const bad = () => { throw new DecisionError('invalid-state'); };
   if (typeof text !== 'string' || Buffer.byteLength(text) > LIMITS.stateBytes) return bad();
   let state: unknown;
@@ -79,6 +96,7 @@ export function parseState(text: string): DecisionState {
     if (!Array.isArray(state[key]) || !state[key].every(nonempty)) return bad();
   }
   if (!Array.isArray(state.evidence) || !state.evidence.every(e => object(e) && exactKeys(e, ['fact', 'source']) && nonempty(e.fact) && nonempty(e.source))) return bad();
+  if (sourceIds && state.evidence.some(e => !sourceIds.includes(e.source))) return bad();
   return state as DecisionState;
 }
 
@@ -88,11 +106,12 @@ export function parseSettings(value: unknown): Partial<ModelSelection> {
   for (const role of ['builder', 'classifier'] as const) {
     if (!Object.hasOwn(value, role)) continue;
     const pair = value[role];
-    if (!object(pair) || !exactKeys(pair, ['provider', 'model'])) throw new DecisionError('invalid-config');
+    if (!object(pair) || !exactKeys(pair, role === 'builder' ? ['provider', 'model', 'reasoning'] : ['provider', 'model'], ['provider', 'model'])) throw new DecisionError('invalid-config');
+    if (Object.hasOwn(pair, 'reasoning') && (typeof pair.reasoning !== 'string' || !REASONING_LEVELS.includes(pair.reasoning as BuilderReasoning))) throw new DecisionError('invalid-config');
     for (const key of ['provider', 'model'] as const) {
       if (typeof pair[key] !== 'string' || !pair[key] || /\s/.test(pair[key]) || Buffer.byteLength(pair[key]) > 512) throw new DecisionError('invalid-config');
     }
-    settings[role] = { provider: pair.provider as string, model: pair.model as string };
+    settings[role] = { provider: pair.provider as string, model: pair.model as string, ...(role === 'builder' && Object.hasOwn(pair, 'reasoning') ? { reasoning: pair.reasoning as BuilderReasoning } : {}) };
   }
   return settings;
 }
@@ -129,11 +148,17 @@ export function addUsage(total: Usage, usage?: Partial<Usage>): void {
 }
 
 // The deadline also bounds a provider promise that does not honor its abort signal.
-export async function decide(input: unknown, deps: DecisionDependencies, external?: AbortSignal, timeoutMs = LIMITS.timeoutMs): Promise<DecisionResult> {
+export async function decide(input: unknown, deps: DecisionDependencies, external?: AbortSignal, timeoutMs = LIMITS.timeoutMs, onProgress?: (progress: DecisionProgress) => void): Promise<DecisionResult> {
   const usage = emptyUsage();
   const controller = new AbortController();
   let abortKind: 'cancelled' | 'timeout' = 'cancelled';
   let stage: ErrorKind = 'model-unavailable';
+  let phase: DecisionStage = 'preparation';
+  const progress = (next: DecisionStage) => {
+    phase = next;
+    // Display failures must not change decision behavior.
+    try { onProgress?.({ stage: next }); } catch { /* No raw UI errors in model context. */ }
+  };
   const cancel = () => controller.abort();
   const timeout = setTimeout(() => { abortKind = 'timeout'; controller.abort(); }, timeoutMs);
   external?.addEventListener('abort', cancel, { once: true });
@@ -149,11 +174,13 @@ export async function decide(input: unknown, deps: DecisionDependencies, externa
     check();
     const request = validateRequest(input);
     const operation = async (): Promise<DecisionResult> => {
+      progress('preparation');
       const models = await deps.prepare(); check();
-      stage = 'builder-failed';
+      stage = 'builder-failed'; progress('collection');
       const built = await deps.build(request, signal, u => addUsage(usage, u)); check();
-      const state = parseState(built.text);
-      stage = 'classifier-failed';
+      progress('validation');
+      const state = parseState(built.text, built.collection.evidence?.map(source => source.id) ?? []);
+      stage = 'classifier-failed'; progress('classification');
       const raw = await deps.classify(request, state, signal);
       if (object(raw) && object(raw.usage)) addUsage(usage, raw.usage as Partial<Usage>);
       check();
@@ -165,7 +192,7 @@ export async function decide(input: unknown, deps: DecisionDependencies, externa
     const candidate = error !== null && typeof error === 'object' && 'kind' in error ? error.kind : undefined;
     const kind: ErrorKind = signal.aborted ? abortKind : typeof candidate === 'string' && Object.hasOwn(MESSAGES, candidate) ? candidate as ErrorKind : stage;
     // Copy usage so late provider completion cannot mutate a returned error.
-    return { ok: false, error: { kind, message: MESSAGES[kind] }, usage: structuredClone(usage) };
+    return { ok: false, error: { kind, code: kind, stage: phase, message: MESSAGES[kind], ...(kind === 'evidence-failed' && error instanceof DecisionError && isEvidenceFailureCode(error.evidenceCode) ? { evidenceCode: error.evidenceCode } : {}) }, usage: structuredClone(usage) };
   } finally {
     clearTimeout(timeout);
     external?.removeEventListener('abort', cancel);

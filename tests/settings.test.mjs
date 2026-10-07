@@ -23,7 +23,7 @@ async function fixture(t) {
   t.after(() => { for (const n of envNames) saved[n] === undefined ? delete process.env[n] : process.env[n] = saved[n]; });
   for (const n of envNames) delete process.env[n]; process.env.PI_CODING_AGENT_DIR = agentDir;
   const tools = new Map(), commands = new Map();
-  extension({ registerTool: tool => tools.set(tool.name, tool), registerCommand: (name, command) => commands.set(name, command), setModel: () => assert.fail('Active model changed') });
+  extension({ on() {}, registerTool: tool => tools.set(tool.name, tool), registerCommand: (name, command) => commands.set(name, command), setModel: () => assert.fail('Active model changed') });
   const calls = [], notices = [], selects = [];
   const chat = [models.builder, { provider: 'other', model: 'tiny' }].map(({ provider, model }) => ({ provider, id: model, api: 'test' }));
   const classifiers = [models.classifier, clef].map(({ provider, model }) => ({ provider, id: model }));

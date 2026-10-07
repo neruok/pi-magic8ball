@@ -4,11 +4,11 @@ import { validateRequest, parseState, readConfig, decide } from '../lib/decision
 import { buildState, conversationContext } from '../lib/builder.ts';
 
 const input = { question: 'Which approach?', responses: { A: 'Existing extension', B: 'Separate extension' } };
-const state = { goal: 'Add a tool', constraints: ['No writes'], current_state: ['Pi is installed'], evidence: [{ fact: 'Pi supports classifiers', source: 'docs/models.md' }], uncertainties: ['No live evaluation'] };
+const state = { goal: 'Add a tool', constraints: ['No writes'], current_state: ['Pi is installed'], evidence: [{ fact: 'Pi supports classifiers', source: 'e1' }], uncertainties: ['No live evaluation'] };
 const usage = { input: 10, output: 5, cacheRead: 2, cacheWrite: 0, totalTokens: 17, cost: { input: .01, output: .02, cacheRead: 0, cacheWrite: 0, total: .03 } };
 const models = { builder: { provider: 'cheap', model: 'small' }, classifier: { provider: 'typesafe', model: 'jev-latest' } };
 const answer = { type: 'choice', choice: 'B', probabilities: { A: .2, B: .7, insufficient_evidence: .1 }, confidence: .45 };
-const collection = { conversationTruncated: false, evidenceCalls: 0, sources: [] };
+const collection = { conversationTruncated: false, evidenceCalls: 1, sources: ['magic8ball_read:docs/models.md'], evidence: [{ id: 'e1', scope: 'workspace', source: 'magic8ball_read:docs/models.md', truncated: false }] };
 function deps(overrides = {}) {
   return { prepare: async () => models, build: async (_r, _s, record) => { record(usage); return { text: JSON.stringify(state), collection }; }, classify: async () => ({ stopReason: 'stop', answers: { decision: answer }, usage }), ...overrides };
 }
@@ -28,7 +28,7 @@ test('AC-2 validates neutral state, rejecting recommendations and oversize', () 
   for (const bad of ['not JSON', '```json\n{}\n```', JSON.stringify({ ...state, answer: 'B' }), JSON.stringify({ A: { pros: ['yes'] }, B: {} }), JSON.stringify({ ...state, evidence: [{ fact: 'claim', source: '' }] }), JSON.stringify({ ...state, goal: 'x'.repeat(12001) })]) fail(() => parseState(bad), 'invalid-state');
 });
 
-test('AC-2 builds state before classification and never feeds classification back', async () => {
+test('AC-2 AC-13 builds state before classification and never feeds classification back', async () => {
   const order = [];
   const result = await decide(input, deps({ build: async (r, _s, record) => { order.push('build'); assert.equal(r.probabilities, undefined); record(usage); return { text: JSON.stringify(state), collection }; }, classify: async (r, s) => { order.push('classify'); assert.deepEqual(s, state); assert.equal(r.responses.B, input.responses.B); return { stopReason: 'stop', answers: { decision: answer } }; } }));
   assert.equal(result.ok, true);
@@ -47,7 +47,7 @@ test('AC-2 conversation scope filters prior 8-ball results and images; truncatio
   assert.equal(large.truncated, true); assert.ok(Buffer.byteLength(large.text) <= 24000); assert.doesNotMatch(large.text, /�/);
 });
 
-test('AC-4 preserves Jev/Clef distributions, backend confidence, abstention and ties', async () => {
+test('AC-4 AC-13 preserves Jev/Clef distributions, backend confidence, abstention and ties', async () => {
   for (const classifier of [{ provider: 'typesafe', model: 'jev-latest' }, { provider: 'cloudflare-workers-ai', model: '@cf/cloudflare/clef' }]) {
     const result = await decide(input, deps({ prepare: async () => ({ ...models, classifier }) }));
     assert.equal(result.ok, true); assert.equal(result.answer, 'B'); assert.equal(result.confidence, .45);
@@ -63,7 +63,7 @@ test('AC-4 preserves Jev/Clef distributions, backend confidence, abstention and 
   }
 });
 
-test('AC-5 rejects missing config, invalid input, unavailable models and provider errors without fallback', async () => {
+test('AC-5 AC-13 rejects missing config, invalid input, unavailable models and provider errors without fallback', async () => {
   fail(() => readConfig({}), 'not-configured');
   assert.deepEqual(readConfig(models), models);
   let called = 0;
@@ -103,11 +103,11 @@ test('AC-3 builder honors nested-tool allowlist and permission failures', async 
   }
 });
 
-test('AC-5 builder stops at four requests and eight evidence calls, retaining each usage', async () => {
+test('AC-5 AC-11 builder stops at four requests and eight evidence calls, retaining each usage', async () => {
   let requests = 0, calls = 0, tokens = 0;
   const d = builderDeps(async (_c, _s, opts) => { requests++; assert.equal(opts.maxTokens, 2048); assert.equal(opts.maxRetries, 0); return message([{ type: 'toolCall', name: 'magic8ball_read', id: `t${requests}`, arguments: { path: 'README.md' } }], 'toolUse'); }, { executeTool: async () => { calls++; return { isError: false, content: [{ type: 'text', text: 'ok' }] }; } });
   await assert.rejects(() => buildState(validateRequest(input), d, new AbortController().signal, u => { tokens += u.input; }), e => e.kind === 'budget-exhausted');
-  assert.equal(requests, 4); assert.equal(calls, 4); assert.equal(tokens, 40);
+  assert.equal(requests, 4); assert.equal(calls, 3); assert.equal(tokens, 40);
   requests = 0; calls = 0;
   d.complete = async () => { requests++; return message(Array.from({ length: 9 }, (_, i) => ({ type: 'toolCall', name: 'magic8ball_read', id: `t${i}`, arguments: { path: 'README.md' } })), 'toolUse'); };
   await assert.rejects(() => buildState(validateRequest(input), d, new AbortController().signal, () => {}), e => e.kind === 'budget-exhausted'); assert.equal(requests, 1); assert.equal(calls, 8);
