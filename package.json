@@ -1,0 +1,27 @@
+{
+  "name": "pi-magic8ball",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Advisory decisions through neutral context and Jev or Clef",
+  "pi": { "extensions": ["./magic8ball.ts"] },
+  "files": ["magic8ball.ts", "lib", "README.md", "docs"],
+  "engines": { "node": ">=24" },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": { "optional": true },
+    "@earendil-works/pi-ai": { "optional": true },
+    "@earendil-works/pi-tui": { "optional": true },
+    "typebox": { "optional": true }
+  },
+  "scripts": {
+    "check": "node --test tests/*.test.mjs",
+    "typecheck": "tsc --noEmit",
+    "verify": "npm run typecheck && npm run check"
+  }
+}
