@@ -47,12 +47,23 @@ async function fileWindow(path: string, byteOffset: number, byteLength: number, 
       bytesRead += read.bytesRead;
     }
     signal?.throwIfAborted();
-    const end = start + bytesRead;
+    const continues = start + bytesRead < stat.size;
     const bytes = buffer.subarray(0, bytesRead);
     if (bytes.includes(0)) throw new DecisionError('evidence-failed', 'invalid-text');
     let text: string;
-    try { text = new TextDecoder('utf-8', { fatal: true }).decode(bytes, { stream: end < stat.size }); }
+    try { text = new TextDecoder('utf-8', { fatal: true }).decode(bytes, { stream: continues }); }
     catch { throw new DecisionError('evidence-failed', 'invalid-text'); }
+    let completeBytes = bytesRead;
+    if (continues && bytesRead) {
+      // Fatal decoding validated the window. Its only possible pending data is one incomplete UTF-8 suffix.
+      let last = bytesRead - 1;
+      while (last > 0 && (bytes[last] & 0xc0) === 0x80) last--;
+      const lead = bytes[last];
+      const width = lead < 0x80 ? 1 : lead < 0xe0 ? 2 : lead < 0xf0 ? 3 : 4;
+      if (bytesRead - last < width) completeBytes = last;
+    }
+    // Count raw bytes, not re-encoded text: TextDecoder can omit a leading BOM.
+    const end = start + completeBytes;
     return { text, truncated: start > 0 || end < stat.size, range: { start, end, totalBytes: stat.size } };
   } finally { await handle.close(); }
 }

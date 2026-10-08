@@ -279,7 +279,11 @@ Optional `byteOffset` defaults to 0. Optional `byteLength` defaults to 16000 and
 Offsets must be nonnegative safe integers. Null values and invalid ranges fail.
 The result reports a half-open byte range `[start, end)` and the observed file size.
 Beyond EOF, the inspected range is empty at EOF. A window that starts inside a UTF-8 sequence fails.
-A terminal partial UTF-8 sequence is omitted when more file bytes remain.
+A terminal partial UTF-8 sequence is omitted when more file bytes remain. The returned `end` excludes those bytes.
+Resume at that `end` to read the complete character. The helper does not read beyond `byteLength` to complete it.
+If no complete character fits, the result has empty text and an empty, truncated range.
+Increase `byteLength` to at least four bytes before continuing from an empty range before EOF.
+Malformed UTF-8 and incomplete sequences at EOF still fail.
 Line numbers and `read.offset` refer to the selected window, not the whole file.
 A window can start inside a line. Its first numbered line is then a fragment.
 Truncation marks uninspected prefixes, tails, and output clipping. It does not imply all inspected bytes appear in the output.
@@ -290,7 +294,8 @@ Final state evidence must cite these IDs, not file paths or invented sources. Un
 The source ledger contains metadata, not file contents. Source validation cannot prove that a claim follows from its source.
 
 The builder receives bounded active-branch context with context edits and compaction applied. Images, system instructions, and tool arguments are omitted.
-Known earlier magic8ball tool results are omitted. A conversation quotation or compaction summary can still contain earlier decisions or probabilities.
+Known earlier magic8ball tool results are omitted. Ordinary assistant text remains, even beside a magic8ball tool call.
+Tool-call blocks and their arguments are omitted. A conversation quotation or compaction summary can still contain earlier decisions or probabilities.
 
 There is no shell, Git execution, web access, write tool, classifier tool, or recursive subagent tool in the builder.
 
@@ -342,7 +347,7 @@ npm run verify
 
 The GitHub Actions workflow runs these commands on Node 24. Tests and CI make no model requests.
 
-The suite covers AC-1 through AC-25 from [the generated contract](docs/pi-magic8ball.md).
+The suite covers AC-1 through AC-27 from [the generated contract](docs/pi-magic8ball.md).
 Tests use temporary settings, mock catalogs and model responses, synthetic keys, mock fetch, and terminal dimensions.
 They check limits, source IDs, cancellation, settings, transcripts, rendering, autocomplete, and classifier validation.
 They do not establish live provider compatibility, terminal appearance, calibration, or builder quality.

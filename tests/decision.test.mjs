@@ -39,10 +39,11 @@ test('AC-2 AC-13 builds state before classification and never feeds classificati
   assert.equal(called, false);
 });
 
-test('AC-2 conversation scope filters prior 8-ball results and images; truncation is UTF-8 bounded', () => {
+test('AC-2 AC-27 conversation retains assistant prose but filters 8-ball results and images; truncation is UTF-8 bounded', () => {
   const c = conversationContext([{ role: 'user', content: 'hello' }, { role: 'toolResult', toolName: 'magic8ball', content: [{ type: 'text', text: 'SECRET_PROBABILITIES' }] }, { role: 'assistant', content: [{ type: 'toolCall', name: 'magic8ball', arguments: input }, { type: 'text', text: 'old decision' }] }, { role: 'user', content: [{ type: 'image', data: 'IMAGE_SECRET' }, { type: 'text', text: 'world' }] }]);
   assert.match(c.text, /hello/); assert.match(c.text, /world/);
-  assert.doesNotMatch(c.text, /SECRET|old decision/);
+  assert.match(c.text, /assistant: old decision/);
+  assert.doesNotMatch(c.text, /SECRET|Which approach|Existing extension/);
   const large = conversationContext([{ role: 'user', content: '😀'.repeat(20000) }]);
   assert.equal(large.truncated, true); assert.ok(Buffer.byteLength(large.text) <= 24000); assert.doesNotMatch(large.text, /�/);
 });

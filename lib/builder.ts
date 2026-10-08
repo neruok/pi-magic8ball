@@ -21,6 +21,8 @@ Use exact returned directory names; do not guess test/tests or other conventiona
 A path-not-found observation means the permitted path was absent when checked, not that a permission check was bypassed.
 Preserve that absence as evidence/uncertainty and use observed names for subsequent calls within the remaining budget.
 Read/search byteOffset and byteLength select a byte window. Line numbers refer to that window.
+For successive windows, resume at range.end. An incomplete UTF-8 suffix is excluded from that range.
+For an empty window before EOF, enlarge byteLength to at least four bytes before continuing.
 When finalize is true, return final JSON now. No evidence tools are available during finalization.
 Use empty arrays when no facts are known. Record disabled scopes and truncated sources as uncertainties.
 State must fit within 12000 UTF-8 bytes. There are at most four model requests and eight evidence calls.
@@ -49,7 +51,6 @@ export function conversationContext(messages: readonly unknown[]): { text: strin
   for (const message of messages) {
     if (!object(message) || !['user', 'assistant', 'toolResult'].includes(String(message.role))) continue;
     if (message.role === 'toolResult' && (message.toolName === 'magic8ball' || String(message.toolName).startsWith('magic8ball_'))) continue;
-    if (message.role === 'assistant' && Array.isArray(message.content) && message.content.some(b => object(b) && b.type === 'toolCall' && b.name === 'magic8ball')) continue;
     const text = textContent(message.content);
     if (text) parts.push(`${message.role}: ${text}`);
   }
