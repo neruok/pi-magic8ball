@@ -1,21 +1,43 @@
-# pi-magic8ball
+# @neruok/pi-magic8ball
 
 An advisory choice tool for Pi. A lightweight context builder collects neutral state. Jev or Clef then returns a choice distribution.
 
 The builder does not choose or rank responses. Its output has a fixed schema. Schema validation cannot prove neutrality or factual accuracy.
 
-## Load
+Configured providers can incur charges. They receive the context you permit the tool to collect.
+Results are advisory evidence, not authorization or execution commands. Confidence measures distribution concentration, not correctness.
+
+## Install and load
 
 Requires Node.js 24 or newer. Pi 1.0.4 is the tested host version.
 Later Pi versions are not yet verified. Runtime peers use `*` as Pi requires, not as a compatibility guarantee.
 
-Load the extension for one invocation:
+After npm publication, install the pinned release:
+
+```bash
+pi install npm:@neruok/pi-magic8ball@0.1.0
+```
+
+Or install from the repository:
+
+```bash
+pi install git:github.com/neruok/pi-magic8ball
+```
+
+This tracks the repository's default branch. Use a reviewed tag or commit to pin an installation.
+Pi records the package in personal settings. Add `--local` for trusted project settings.
+Review extension code before installation. Restart Pi or use `/reload` after installation.
+
+To try a local checkout for one invocation:
 
 ```bash
 pi -e /absolute/path/to/pi-magic8ball/magic8ball.ts
 ```
 
-No installation or profile change is required. Pi supplies the host packages listed in `package.json`.
+The local invocation does not change package settings. Pi supplies the host packages listed in `package.json`.
+
+The release candidate is `@neruok/pi-magic8ball@0.1.0`, licensed under [MIT](LICENSE).
+Release preparation does not publish the package. Registry ownership and publication credentials still require verification.
 
 ## Configure models
 
@@ -57,7 +79,7 @@ For the full argument menu, press Backspace to remove the trailing space, wait f
 These workarounds were checked with Pi's actual editor and mock terminal dimensions. The extension does not patch Pi or replace its editor.
 
 Selecting a suggestion inserts text only. It does not save settings, change capture, or make model requests.
-Submit the completed command to apply it. Use `/reload` after loading this change.
+Submit the completed command to apply it. Code updates require `/reload`, but settings updates apply on the next call.
 
 ### Settings files
 
@@ -320,37 +342,39 @@ npm run verify
 
 The GitHub Actions workflow runs these commands on Node 24. Tests and CI make no model requests.
 
-The suite covers AC-1 through AC-24 from [the generated contract](docs/pi-magic8ball.md).
-The original 14 checks failed against the V1 no-op scaffold. All nine settings/command checks failed before the settings implementation.
-The two overflow checks and four compact-search checks failed before their respective picker changes. Cancellation checks passed before and after.
-Before the evidence and usability change, all 30 checks and strict TypeScript checking passed.
-The seven new acceptance checks failed before implementation. Existing fixtures now use collector IDs instead of path citations.
-The request-budget fixture expects three evidence calls because request four must finalize.
-The evidence/usability suite passed 37 checks. Five transcript acceptance checks failed before implementation; a separate raw-error exposure check also failed before its fix.
-The transcript suite passed 44 checks. All eight initial reasoning/discovery checks failed before implementation.
-The reasoning/discovery suite passed 53 checks and strict TypeScript checking, including an additional safe-options capture check. The installed Pi loader previously registered four tools and `/magic8ball` without errors.
-Transcript commands, lifecycle clearing, field filtering, timeout/concurrency handling, UTF-8 limits, and the actual viewer are checked offline.
-Reasoning tests cover supported levels, scoped settings, legacy request options, metadata and safe capture. Discovery tests reproduce the batched `test`/`tests` guess, bounded continuation, and hard permission/security failures.
-No paid reasoning evaluation or real-terminal regression check ran for this change. Earlier user-directed live calls exercised transcript capture; they do not establish builder quality or general terminal behavior.
-All six autocomplete checks failed before implementation because the command had no argument completions.
-The suite now passes 59 checks and strict TypeScript checking. All 53 prior checks passed before and after this change.
-Autocomplete checks cover grammar, role-specific catalogs, fuzzy model names, scoped reasoning, silent failures, and stale session results.
-They also apply replacements through Pi's actual autocomplete provider, including separators and text after the cursor.
-No live terminal check or paid call ran for this autocomplete change.
-Tests use temporary settings files, mock UI/model catalogs, model responses, terminal dimensions, and the nested-tool boundary.
-They use the installed Pi session projection and TypeBox schemas. They do not prove terminal rendering, live Jev/Clef behavior, calibration, or context-builder quality.
+The suite covers AC-1 through AC-25 from [the generated contract](docs/pi-magic8ball.md).
+Tests use temporary settings, mock catalogs and model responses, synthetic keys, mock fetch, and terminal dimensions.
+They check limits, source IDs, cancellation, settings, transcripts, rendering, autocomplete, and classifier validation.
+They do not establish live provider compatibility, terminal appearance, calibration, or builder quality.
 
-### Advisor-derived reliability checks
+The package check also runs inside `npm run verify`. Run it separately with:
 
-The preserved baseline passed all 59 tests and strict TypeScript checking. The first 12 reliability checks failed before implementation for missing timeout settings, request deadlines, usage completeness, diagnostics, and full call display. Added checks cover late preparation and a successful fourth-request finalization through the installed Responses adapter with mock SSE.
+```bash
+npm run check:package
+```
 
-Verification uses temporary settings, synthetic API keys, mock fetch, injected errors, and terminal dimensions. It does not establish live Jev/Clef interoperability, terminal appearance, calibrated confidence, or builder quality. No paid calls or live settings changes are part of these checks.
+It packs with lifecycle scripts disabled, checks the file list, and extracts into a private temporary directory.
+The packed TypeScript entry must register through Pi's loader without adjacent `node_modules`.
+The packed benchmark dry run must work without an adapter or provider calls.
+The check requires `tar`, as supplied by the Linux CI runner. Windows and macOS checks have not run.
+No build step or compiled entry is required. Pi loads the source TypeScript through its extension loader.
 
-Pi already defaults to short caching. Caching/replay behavior is unchanged; no new opaque state is retained. Evaluate benefits before adding replay complexity. The quality benchmark below still requires separate spending authorization.
-
-The canonical contract is document `pi-magic8ball` in the maintainer workspace documentation store.
-Author changes through checkout, preview, and import. Publish to this worktree with `docs_compile` and its project output root.
+The canonical contract lives in the maintainer workspace documentation store as `pi-magic8ball`.
+Author changes through checkout, preview, and import. Compile the project copy through `docs_compile`.
 Do not edit the generated contract directly.
+
+### Before npm publication
+
+The selected release is `@neruok/pi-magic8ball@0.1.0` under MIT. The manifest sets public access for the scoped package.
+
+1. Confirm the manifest and lockfile identify the intended release.
+2. Run `npm ci --ignore-scripts` and `npm run verify` in a clean checkout.
+3. Inspect `npm pack --dry-run --ignore-scripts` and the package contents, including `LICENSE`.
+4. Confirm registry access and ownership of the `@neruok` scope.
+5. Get explicit publication authorization before running `npm publish`.
+
+Package checks do not grant publication authority. Get explicit authorization before commits, tags, pushes, or npm publication.
+The development dependencies pin Pi 1.0.4. Passing tests do not certify other host versions.
 
 ## Opt-in quality benchmark
 

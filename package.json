@@ -1,11 +1,16 @@
 {
-  "name": "pi-magic8ball",
-  "version": "0.0.0",
-  "private": true,
+  "name": "@neruok/pi-magic8ball",
+  "version": "0.1.0",
+  "license": "MIT",
+  "publishConfig": { "access": "public" },
   "type": "module",
   "description": "Advisory decisions through neutral context and Jev or Clef",
+  "keywords": ["pi-package", "pi-extension", "decision-support", "jev", "clef"],
+  "repository": { "type": "git", "url": "https://github.com/neruok/pi-magic8ball.git" },
+  "homepage": "https://github.com/neruok/pi-magic8ball#readme",
+  "bugs": { "url": "https://github.com/neruok/pi-magic8ball/issues" },
   "pi": { "extensions": ["./magic8ball.ts"] },
-  "files": ["magic8ball.ts", "lib", "scripts", "README.md", "docs"],
+  "files": ["magic8ball.ts", "lib", "scripts", "README.md", "docs", "LICENSE"],
   "engines": { "node": ">=24" },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",
@@ -30,6 +35,7 @@
   "scripts": {
     "benchmark": "node scripts/benchmark.mjs",
     "check": "node --test tests/*.test.mjs",
+    "check:package": "node --test tests/package.test.mjs",
     "typecheck": "tsc --noEmit",
     "verify": "npm run typecheck && npm run check"
   }
