@@ -2,7 +2,7 @@ import type { ModelThinkingLevel, Usage } from '@earendil-works/pi-ai';
 import { permittedFilePath } from './paths.ts';
 import { Execution, type FailureDiagnostics } from './execution.ts';
 
-export const LIMITS = Object.freeze({ requestBytes: 16000, stateBytes: 12000, conversationBytes: 24000, evidenceBytes: 16000, builderRequests: 4, evidenceCalls: 8, outputTokens: 2048, timeoutMs: 120000 });
+export const LIMITS = Object.freeze({ requestBytes: 16000, suppliedEntries: 8, suppliedEntryBytes: 8192, suppliedBytes: 32768, stateBytes: 12000, conversationBytes: 24000, evidenceBytes: 16000, builderRequests: 4, evidenceCalls: 8, outputTokens: 2048, timeoutMs: 120000 });
 export const ABSTENTION = 'insufficient_evidence';
 export const REASONING_LEVELS = ['default', 'off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
 export type BuilderReasoning = 'default' | ModelThinkingLevel;
@@ -30,11 +30,12 @@ export class DecisionError extends Error {
   readonly evidenceCode?: EvidenceFailureCode;
   constructor(kind: ErrorKind, evidenceCode?: EvidenceFailureCode) { super(MESSAGES[kind]); this.kind = kind; this.evidenceCode = evidenceCode; }
 }
-export type DecisionRequest = { question: string; responses: Record<string, string>; abstain: boolean; context: { conversation: boolean; workspace: boolean; files?: string[] } };
+export type SuppliedEvidence = { label?: string; content: string };
+export type DecisionRequest = { question: string; responses: Record<string, string>; abstain: boolean; context: { conversation: boolean; workspace: boolean; files?: string[]; supplied?: SuppliedEvidence[] } };
 export type DecisionState = { goal: string; constraints: string[]; current_state: string[]; evidence: { fact: string; source: string }[]; uncertainties: string[] };
 export type ModelSelection = { builder: { provider: string; model: string; reasoning?: BuilderReasoning }; classifier: { provider: string; model: string } };
 export type ByteRange = { start: number; end: number; totalBytes: number };
-export type CollectedEvidence = { id: string; scope: 'conversation' | 'workspace'; source: string; truncated: boolean; range?: ByteRange; code?: 'path-not-found' };
+export type CollectedEvidence = { id: string; scope: 'conversation' | 'workspace' | 'supplied'; source: string; label?: string; truncated: boolean; range?: ByteRange; code?: 'path-not-found' };
 export type Collection = { conversationTruncated: boolean; evidenceCalls: number; sources: string[]; evidence: CollectedEvidence[] };
 export type DecisionStage = 'preparation' | 'collection' | 'validation' | 'classification';
 export type DecisionProgress = { stage: DecisionStage };
@@ -54,12 +55,32 @@ function exactKeys(value: Record<string, unknown>, allowed: string[], required: 
 }
 function nonempty(value: unknown): value is string { return typeof value === 'string' && value.trim().length > 0; }
 
+function validateSupplied(value: unknown): SuppliedEvidence[] {
+  const bad = () => { throw new DecisionError('invalid-input'); };
+  if (!Array.isArray(value) || value.length > LIMITS.suppliedEntries) return bad();
+  const entries: SuppliedEvidence[] = [];
+  for (const entry of value) {
+    if (!object(entry) || !exactKeys(entry, ['label', 'content'], ['content']) || !nonempty(entry.content)) return bad();
+    if (Object.hasOwn(entry, 'label') && !nonempty(entry.label)) return bad();
+    if (Buffer.byteLength(JSON.stringify(entry)) > LIMITS.suppliedEntryBytes) return bad();
+    entries.push({ ...(Object.hasOwn(entry, 'label') ? { label: entry.label as string } : {}), content: entry.content });
+  }
+  if (Buffer.byteLength(JSON.stringify(value)) > LIMITS.suppliedBytes) return bad();
+  return entries;
+}
+
 export function validateRequest(input: unknown): DecisionRequest {
   const bad = () => { throw new DecisionError('invalid-input'); };
   if (!object(input) || !exactKeys(input, ['question', 'responses', 'abstain', 'context', 'diagnostics'], ['question', 'responses'])) return bad();
   if (!nonempty(input.question) || !object(input.responses) || (Object.hasOwn(input, 'abstain') && typeof input.abstain !== 'boolean')) return bad();
   let serialized: string;
-  try { serialized = JSON.stringify(input); } catch { return bad(); }
+  try {
+    // Supplied JSON has independent limits. Preserve the original cap for every other field.
+    const base = object(input.context) && Object.hasOwn(input.context, 'supplied')
+      ? { ...input, context: Object.fromEntries(Object.entries(input.context).filter(([key]) => key !== 'supplied')) }
+      : input;
+    serialized = JSON.stringify(base);
+  } catch { return bad(); }
   if (Buffer.byteLength(serialized) > LIMITS.requestBytes) return bad();
   if (Object.hasOwn(input, 'diagnostics') && typeof input.diagnostics !== 'boolean') return bad();
   const abstain = input.abstain !== false;
@@ -70,7 +91,7 @@ export function validateRequest(input: unknown): DecisionRequest {
   }
   const context: DecisionRequest['context'] = { conversation: true, workspace: true };
   if (Object.hasOwn(input, 'context')) {
-    if (!object(input.context) || !exactKeys(input.context, ['conversation', 'workspace', 'files'], [])) return bad();
+    if (!object(input.context) || !exactKeys(input.context, ['conversation', 'workspace', 'files', 'supplied'], [])) return bad();
     for (const key of ['conversation', 'workspace'] as const) {
       if (Object.hasOwn(input.context, key)) {
         if (typeof input.context[key] !== 'boolean') return bad();
@@ -82,6 +103,7 @@ export function validateRequest(input: unknown): DecisionRequest {
       if (!Array.isArray(files) || files.length > LIMITS.evidenceCalls || !files.every(permittedFilePath) || new Set(files).size !== files.length || (!context.workspace && files.length > 0)) return bad();
       context.files = [...files];
     }
+    if (Object.hasOwn(input.context, 'supplied')) context.supplied = validateSupplied(input.context.supplied);
   }
   const responses = Object.fromEntries(entries) as Record<string, string>;
   if (abstain) responses[ABSTENTION] = 'Available evidence is insufficient to reliably distinguish the supplied choices.';

@@ -114,6 +114,23 @@ The extension rejects Pi virtual-model entries before requests. This prevents a 
 Model size alone does not establish evidence quality. One live smoke call completed both model stages with conversation context only.
 It returned a valid advisory distribution without abstention. This does not establish calibration or context-builder quality.
 
+## When to use it
+
+Ask the user when you need information. Use `magic8ball` when you need independent judgment from available evidence.
+
+Use it after investigation leaves multiple plausible approaches, explanations, or fixes that could materially affect the work.
+Consider it before an implementation or architecture choice that would be expensive to reverse.
+Supply concrete alternatives with neutral descriptions of their trade-offs.
+
+Ask the user instead when a choice depends on a user preference, missing requirement, authorization, or unavailable user information.
+Do not use the tool for trivial choices, explicit user decisions, or answers already required by evidence or policy.
+No particular user-question tool needs to be installed.
+
+The active tool contributes a discovery snippet and static usage rules to Pi's default system prompt.
+These rules do not trigger automatic calls or override provider-spending restrictions. Custom system prompts can omit them.
+The offline tests check prompt construction, not increased tool usage or better decisions.
+Code changes require `/reload` or restart in an existing session.
+
 ## Tool
 
 ```json
@@ -136,12 +153,61 @@ Call `magic8ball` with this input. Response descriptions are mandatory. The tool
 Caller choices must number 2–25 with abstention, or 2–26 without it. Identifiers must match `[A-Za-z][A-Za-z0-9_]{0,63}`.
 Reserved identifiers are `__proto__`, `constructor`, `prototype`, and `insufficient_evidence`.
 
-Both context flags default to true. Set both to false to classify state built only from the question and response descriptions.
+Both context flags default to true. Set both to false to build state without conversation or workspace collection.
+The question, response descriptions, and any `context.supplied` entries still reach the builder.
 Optional `context.files` holds up to eight distinct workspace-relative file hints. Omission or an empty array supplies no hints.
 Hints guide the builder. They do not trigger reads or expand permissions. Nonempty hints require workspace scope.
 The input rejects denied path syntax, duplicates, null, and invalid types before model calls.
 The evidence helper checks file existence, type, symlinks, and containment when a read occurs.
 Scope flags control gathering. They do not restrict the caller's existing transcript or the parent agent's other tools.
+
+### Supplemental evidence
+
+Use `context.supplied` for concise observations that the builder cannot retrieve from permitted conversation or workspace.
+Examples include external API results, measurements, runtime observations, or tool output outside the retained conversation window.
+Use `context.files` when the builder can read the evidence itself. Avoid duplicate retrievable content and your own recommendation.
+
+```json
+{
+  "question": "Which scheduler fits the available evidence?",
+  "responses": {
+    "polling": "Keep the current polling scheduler.",
+    "events": "Replace polling with event-driven scheduling."
+  },
+  "context": {
+    "conversation": false,
+    "workspace": false,
+    "supplied": [
+      {
+        "label": "production telemetry",
+        "content": "Polling accounts for approximately 18% of idle worker CPU usage."
+      },
+      {
+        "content": "The upstream service provides no notifications or webhooks."
+      }
+    ]
+  }
+}
+```
+
+Each entry requires nonblank `content` and permits an optional nonblank `label`. Strings and entry order remain unchanged.
+Duplicate labels are permitted. Omission or an empty array supplies no evidence. Null, extra fields, and invalid entries fail validation.
+An array permits at most eight entries. Each entry's JSON permits 8192 UTF-8 bytes (8 KiB).
+The array's JSON permits 32768 UTF-8 bytes (32 KiB). Labels, escaping, quotes, brackets, and commas count where applicable.
+For example, a newline counts as the two bytes of its JSON escape. All boundaries are inclusive. Oversized input fails without truncation.
+The rest of the request retains its 16000-byte serialized limit, measured with only `context.supplied` omitted.
+
+Supplied evidence enters the builder as untrusted data, not instructions or a completed state object.
+Its instructions distinguish observations from caller conclusions, recommendations, rankings, and preferences, which remain unverified claims.
+Labels describe claims. They do not prove provenance. Prompt instructions cannot guarantee neutrality or resistance to prompt injection.
+
+The collector assigns `supplied1` through `supplied8` by array position, independently of labels and workspace-call IDs.
+These IDs remain available with both scope flags false. Supplied evidence grants no workspace access and consumes no workspace-call budget.
+The source ledger uses scope `supplied`, source `caller-supplied evidence`, optional label, and `truncated: false`, without raw content.
+The classifier receives only the validated state plus question and choices, not a separate copy of supplied entries.
+State can still contain facts extracted from supplied content. Pi can persist tool arguments, labels, state, and results.
+Optional local transcript capture includes the builder's supplied evidence within its existing capture limits.
+Do not supply credentials or secrets. Use providers suitable for the data.
 
 A success returns:
 
@@ -290,6 +356,7 @@ Truncation marks uninspected prefixes, tails, and output clipping. It does not i
 Lists inspect at most 200 entries and use one extra entry to detect overflow. Results show truncation explicitly.
 
 The collector assigns `conversation` to nonempty permitted conversation and `e1` through `e8` to successful workspace calls.
+It also assigns `supplied1` through `supplied8` to supplemental entries, with caller labels kept separately from IDs.
 Final state evidence must cite these IDs, not file paths or invented sources. Unknown citations fail before classification.
 The source ledger contains metadata, not file contents. Source validation cannot prove that a claim follows from its source.
 
@@ -305,7 +372,10 @@ Each invocation permits at most:
 
 | Resource | Ceiling |
 | --- | --- |
-| Serialized request | 16000 UTF-8 bytes |
+| Serialized request with `context.supplied` omitted | 16000 UTF-8 bytes |
+| Supplied entries | 8 |
+| Serialized supplied entry, including optional label | 8192 UTF-8 bytes |
+| Serialized supplied array, including separators | 32768 UTF-8 bytes |
 | Conversation text | 24000 UTF-8 bytes, retaining the end |
 | Final state | 12000 UTF-8 bytes |
 | Builder requests | 4 |
@@ -325,11 +395,11 @@ No later stage starts after cancellation. Returned usage includes only calls who
 
 ### Data boundaries
 
-The builder provider receives the question, descriptions, permitted conversation, and collected file content.
+The builder provider receives the question, descriptions, supplied evidence, permitted conversation, and collected file content.
 The classifier provider receives the question, descriptions, and final state. The parent session records state and results through normal Pi persistence.
 The extension creates no separate transcript files or background services.
 
-The path filter is not a secret detector or operating-system sandbox. Ordinary files and conversation text can contain secrets.
+The path filter is not a secret detector or operating-system sandbox. Ordinary files, conversation, and supplied evidence can contain secrets.
 Concurrent filesystem mutation can race path validation. Parent permission hooks are trusted code and can have their own effects.
 Use trusted workspaces and providers suitable for the data. Use OS isolation when stronger boundaries are required.
 
@@ -347,9 +417,9 @@ npm run verify
 
 The GitHub Actions workflow runs these commands on Node 24. Tests and CI make no model requests.
 
-The suite covers AC-1 through AC-27 from [the generated contract](docs/pi-magic8ball.md).
+The suite covers AC-1 through AC-30 from [the generated contract](docs/pi-magic8ball.md).
 Tests use temporary settings, mock catalogs and model responses, synthetic keys, mock fetch, and terminal dimensions.
-They check limits, source IDs, cancellation, settings, transcripts, rendering, autocomplete, and classifier validation.
+They check limits, source IDs, supplemental evidence, usage guidance, cancellation, settings, transcripts, rendering, autocomplete, and classifier validation.
 They do not establish live provider compatibility, terminal appearance, calibration, or builder quality.
 
 The package check also runs inside `npm run verify`. Run it separately with:
