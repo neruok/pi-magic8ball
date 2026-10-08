@@ -1,13 +1,13 @@
 import { getAgentDir, type ExtensionAPI, type ExtensionCommandContext } from '@earendil-works/pi-coding-agent';
-import { DecisionError, REASONING_LEVELS, parseSettings, type BuilderReasoning, type ModelSelection } from './decision.ts';
+import { DecisionError, LIMITS, REASONING_LEVELS, parseSettings, type BuilderReasoning, type ModelSelection } from './decision.ts';
 import { selectModel } from './model-picker.ts';
 import { argumentCompletions, type CompletionContext } from './completions.ts';
 import { assertReasoning, supportedReasoning } from './reasoning.ts';
 import { transcriptCommand, type TranscriptStore } from './transcripts.ts';
-import { loadSettings, saveSettingsPatch, settingsPaths, type LoadedSettings, type Role, type Scope, type SettingsPaths } from './settings.ts';
+import { loadSettings, saveSettingsPatch, settingsPaths, type LoadedSettings, type Role, type Settings, type Scope, type SettingsPaths } from './settings.ts';
 
-const USAGE = 'Usage: /magic8ball [--global|--project] [show | builder <provider> <model> | classifier <provider> <model> | reasoning [level]]. No subcommand opens the two-model picker. Saves default to global (user) settings. Session-only capture: /magic8ball transcripts [on|off|show].';
-function parseCommand(args: string): { scope: Scope; role?: Role; pair?: ModelSelection[Role]; show: boolean; reasoning?: BuilderReasoning; reasoningQuery?: boolean } {
+const USAGE = 'Usage: /magic8ball [--global|--project] [show | builder <provider> <model> | classifier <provider> <model> | reasoning [level] | timeout [milliseconds|default]]. No subcommand opens the two-model picker. Saves default to global (user) settings. Session-only capture: /magic8ball transcripts [on|off|show].';
+function parseCommand(args: string): { scope: Scope; role?: Role; pair?: ModelSelection[Role]; show: boolean; reasoning?: BuilderReasoning; reasoningQuery?: boolean; timeoutQuery?: boolean; timeoutMs?: number; resetTimeout?: boolean } {
   const tokens = args.trim() ? args.trim().split(/\s+/) : [];
   const flags = tokens.filter(t => t.startsWith('--'));
   if (flags.length > 1 || flags.some(f => f !== '--global' && f !== '--project')) throw new Error(USAGE);
@@ -15,6 +15,16 @@ function parseCommand(args: string): { scope: Scope; role?: Role; pair?: ModelSe
   const rest = tokens.filter(t => !t.startsWith('--'));
   if (!rest.length) return { scope, show: false };
   if (rest[0] === 'show' && rest.length === 1) return { scope, show: true };
+  if (rest[0] === 'timeout') {
+    if (rest.length === 1) return { scope, show: false, timeoutQuery: true };
+    if (rest.length === 2 && rest[1] === 'default') return { scope, show: false, resetTimeout: true };
+    if (rest.length === 2 && /^\d+$/.test(rest[1])) {
+      const timeoutMs = Number(rest[1]);
+      parseSettings({ timeoutMs });
+      return { scope, show: false, timeoutMs };
+    }
+    throw new Error(USAGE);
+  }
   if (rest[0] === 'reasoning') {
     if (rest.length === 1) return { scope, show: false, reasoningQuery: true };
     if (rest.length === 2 && REASONING_LEVELS.includes(rest[1] as BuilderReasoning)) return { scope, role: 'builder', show: false, reasoning: rest[1] as BuilderReasoning };
@@ -33,7 +43,7 @@ function describe(loaded: LoadedSettings, paths: SettingsPaths, trusted: boolean
     const pair = loaded.settings[role];
     return `${role}: ${pair ? `${pair.provider} / ${pair.model} (${loaded.sources[role]})` : 'not configured'}`;
   });
-  return ['Effective magic8ball settings:', ...selections, `builder reasoning: ${loaded.settings.builder?.reasoning ?? 'default (legacy provider behavior)'}`, `global (user): ${paths.global}`, `project: ${paths.project}${trusted ? '' : ' (ignored: project not trusted)'}`].join('\n');
+  return ['Effective magic8ball settings:', ...selections, `timeout: ${loaded.settings.timeoutMs ?? LIMITS.timeoutMs} ms (${loaded.sources.timeoutMs ?? 'default'})`, `builder reasoning: ${loaded.settings.builder?.reasoning ?? 'default (legacy provider behavior)'}`, `global (user): ${paths.global}`, `project: ${paths.project}${trusted ? '' : ' (ignored: project not trusted)'}`].join('\n');
 }
 function resolve(ctx: ExtensionCommandContext, role: Role, pair: ModelSelection[Role]): void {
   if (role === 'builder') {
@@ -57,7 +67,7 @@ export function registerSettingsCommand(pi: ExtensionAPI, transcripts: Transcrip
   let context: CompletionContext | undefined;
   let contextRevision = 0;
   pi.registerCommand('magic8ball', {
-    description: 'Configure advisory decision models; picker, show, builder/classifier, --global/--project; reasoning [level]; transcripts [on|off|show]',
+    description: 'Configure advisory decision models; picker, show, builder/classifier, --global/--project; reasoning [level]; timeout [milliseconds|default]; transcripts [on|off|show]',
     async getArgumentCompletions(prefix) {
       const revision = contextRevision;
       const items = await argumentCompletions(prefix, context);
@@ -75,6 +85,10 @@ export function registerSettingsCommand(pi: ExtensionAPI, transcripts: Transcrip
         try { command = parseCommand(args); }
         catch (error) { ctx.ui.notify(error instanceof DecisionError ? error.message : USAGE, 'error'); return; }
         const loaded = await loadSettings(paths, ctx.isProjectTrusted());
+        if (command.timeoutQuery) {
+          ctx.ui.notify(`${describe(loaded, paths, ctx.isProjectTrusted())}\nUse timeout <milliseconds> or timeout default. Longer deadlines are not a billing guarantee.`, 'info');
+          return;
+        }
         if (command.reasoningQuery) {
           const pair = loaded.settings.builder;
           if (!pair) throw new DecisionError('not-configured');
@@ -83,7 +97,7 @@ export function registerSettingsCommand(pi: ExtensionAPI, transcripts: Transcrip
           ctx.ui.notify(`${describe(loaded, paths, ctx.isProjectTrusted())}\nSupported builder reasoning: ${supportedReasoning(model).join(', ')}.\nUse /magic8ball [--global|--project] reasoning <level>. Higher reasoning can increase cost and latency.`, 'info');
           return;
         }
-        if (command.show || (!command.role && !ctx.hasUI)) {
+        if (command.show || (!command.role && command.timeoutMs === undefined && !command.resetTimeout && !ctx.hasUI)) {
           ctx.ui.notify(describe(loaded, paths, ctx.isProjectTrusted()) + '\n' + USAGE, 'info');
           return;
         }
@@ -92,8 +106,10 @@ export function registerSettingsCommand(pi: ExtensionAPI, transcripts: Transcrip
           return;
         }
         await ctx.waitForIdle();
-        const patch: Partial<ModelSelection> = {};
-        if (command.reasoning !== undefined) {
+        const patch: Settings = {};
+        if (command.timeoutMs !== undefined || command.resetTimeout) {
+          if (command.timeoutMs !== undefined) patch.timeoutMs = command.timeoutMs;
+        } else if (command.reasoning !== undefined) {
           const target = command.scope === 'global' ? await loadSettings(paths, false) : loaded;
           if (!target.settings.builder) throw new DecisionError('not-configured');
           const pair = { ...target.settings.builder, reasoning: command.reasoning };
@@ -111,7 +127,7 @@ export function registerSettingsCommand(pi: ExtensionAPI, transcripts: Transcrip
           }
         }
         saveStarted = true;
-        await saveSettingsPatch(paths, command.scope, patch, ctx.isProjectTrusted());
+        await saveSettingsPatch(paths, command.scope, patch, ctx.isProjectTrusted(), command.resetTimeout);
         const effective = await loadSettings(paths, ctx.isProjectTrusted());
         ctx.ui.notify(`Saved ${command.scope} settings at ${paths[command.scope]}.\n${describe(effective, paths, ctx.isProjectTrusted())}`, 'info');
       } catch (error) {

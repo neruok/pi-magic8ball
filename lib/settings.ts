@@ -3,13 +3,13 @@ import { lstat, open, mkdir, rename, link, unlink, type FileHandle } from 'node:
 import { randomUUID } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { withFileMutationQueue } from '@earendil-works/pi-coding-agent';
-import { DecisionError, LIMITS, parseSettings, type ModelSelection } from './decision.ts';
+import { DecisionError, LIMITS, parseSettings, type DecisionSettings, type ModelSelection } from './decision.ts';
 
-export type Settings = Partial<ModelSelection>;
+export type Settings = DecisionSettings;
 export type Scope = 'global' | 'project';
 export type Role = keyof ModelSelection;
 export type SettingsPaths = Record<Scope, string>;
-export type LoadedSettings = { settings: Settings; sources: Partial<Record<Role, Scope>> };
+export type LoadedSettings = { settings: Settings; sources: Partial<Record<Role | 'timeoutMs', Scope>> };
 export function settingsPaths(cwd: string, agentDir: string): SettingsPaths {
   return { global: join(agentDir, 'magic8ball.json'), project: join(cwd, '.pi', 'magic8ball.json') };
 }
@@ -57,17 +57,17 @@ export async function loadSettings(paths: SettingsPaths, trusted: boolean): Prom
   const project = trusted ? (await readLayer(paths.project)).settings : {};
   const settings: Settings = { ...global, ...project };
   const sources: LoadedSettings['sources'] = {};
-  for (const role of ['builder', 'classifier'] as const) {
+  for (const role of ['builder', 'classifier', 'timeoutMs'] as const) {
     if (project[role]) sources[role] = 'project';
     else if (global[role]) sources[role] = 'global';
   }
   return { settings, sources };
 }
 
-export async function saveSettingsPatch(paths: SettingsPaths, scope: Scope, patch: Settings, trusted: boolean): Promise<void> {
+export async function saveSettingsPatch(paths: SettingsPaths, scope: Scope, patch: Settings, trusted: boolean, resetTimeout = false): Promise<void> {
   if (scope === 'project' && !trusted) throw new DecisionError('settings-unavailable');
   const validated = parseSettings(patch);
-  if (!Object.keys(validated).length) throw new DecisionError('invalid-config');
+  if (!Object.keys(validated).length && !resetTimeout) throw new DecisionError('invalid-config');
   const path = paths[scope];
   try {
     await withFileMutationQueue(path, async () => {
@@ -82,7 +82,9 @@ export async function saveSettingsPatch(paths: SettingsPaths, scope: Scope, patc
         // No stale-lock reclamation: another writer, or uncertain prior completion, must be inspected.
         lock = await open(lockPath, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600);
         const before = await readLayer(path);
-        const text = JSON.stringify({ ...before.settings, ...validated }, null, 2) + '\n';
+        const next = { ...before.settings, ...validated };
+        if (resetTimeout) delete next.timeoutMs;
+        const text = JSON.stringify(next, null, 2) + '\n';
         if (Buffer.byteLength(text) > LIMITS.requestBytes) throw new DecisionError('invalid-config');
         const output = await open(temp, 'wx', 0o600);
         ownedTemp = true;

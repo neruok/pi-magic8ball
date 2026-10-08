@@ -12,6 +12,7 @@ const commands: Choice[] = [
   { value: 'builder', description: 'Set the context-builder provider and model' },
   { value: 'classifier', description: 'Set the decision-classifier provider and model' },
   { value: 'reasoning', description: 'Inspect or set builder reasoning' },
+  { value: 'timeout', description: 'Inspect or set the invocation deadline in milliseconds' },
   { value: 'transcripts', description: 'Toggle or view session-only transcript capture' },
 ];
 const scopes: Choice[] = [
@@ -36,6 +37,8 @@ function syntax(prefix: string): Syntax | undefined {
     if (flags.length || args.length > 2 || (argument && !actions.some(choice => choice.value === argument))) return undefined;
   } else if (command === 'show') {
     if (args.length > 1) return undefined;
+  } else if (command === 'timeout') {
+    if (args.length > 2 || (argument && argument !== 'default' && (!/^\d+$/.test(argument) || Number(argument) < 1 || Number(argument) > 2147483647))) return undefined;
   } else if (command === 'reasoning') {
     if (args.length > 2 || (argument && !REASONING_LEVELS.some(level => level === argument))) return undefined;
   } else if (command === 'builder' || command === 'classifier') {
@@ -52,6 +55,7 @@ async function choices(input: Syntax, ctx?: CompletionContext): Promise<Choice[]
   if (!command) return [...commands.filter(choice => !scoped || choice.value !== 'transcripts'), ...availableScopes];
   if (command === 'transcripts') return args.length === 1 ? actions : [];
   if (command === 'show' || (command === 'reasoning' && args.length === 2) || args.length === 3) return availableScopes;
+  if (command === 'timeout') return args.length === 1 ? [{ value: 'default', description: 'Remove the scoped timeout and restore inheritance' }] : availableScopes;
   if (!ctx) return [];
   if (command === 'reasoning') {
     if (project && !ctx.isProjectTrusted()) return [];

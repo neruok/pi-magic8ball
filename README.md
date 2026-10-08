@@ -45,14 +45,14 @@ Commands do not change Pi's active conversation model.
 ### Command autocomplete
 
 Type the full `/magic8ball ` command, including its space, to show subcommands and scope flags.
-Further arguments suggest transcript actions, available role-specific providers and models, or supported builder reasoning levels.
+Further arguments suggest transcript actions, available role-specific providers and models, supported builder reasoning levels, or timeout reset.
 Model search matches identifiers and display names with Pi's fuzzy matching.
 Reasoning suggestions use the builder that the chosen scope would update. Global is the default, even with an effective project override.
 Use `--project` before the level to get project-builder choices.
 
 Pi 1.0.4 has a Tab-routing defect after Tab completes a command name. The next Tab can fail to open argument completion.
 After name completion, type the first letter of a subcommand, wait for the menu, then press Tab.
-Use `r` for reasoning, `b` for builder, `c` for classifier, or `t` for transcripts.
+Use `r` for reasoning, `b` for builder, `c` for classifier, or `t` for timeout/transcripts.
 For the full argument menu, press Backspace to remove the trailing space, wait for the command menu, then type Space.
 These workarounds were checked with Pi's actual editor and mock terminal dimensions. The extension does not patch Pi or replace its editor.
 
@@ -74,7 +74,7 @@ Example user settings:
 ```
 
 Each file can set either or both roles. A project role replaces the entire user role; individual provider/model fields never inherit.
-Files use strict JSON, with only these role fields, and must fit within 16000 UTF-8 bytes. Each identifier must contain 1–512 UTF-8 bytes without whitespace.
+Files use strict JSON, with only these role fields and optional root `timeoutMs`, and must fit within 16000 UTF-8 bytes. Each identifier must contain 1–512 UTF-8 bytes without whitespace.
 Malformed or inaccessible settings fail closed. Symlink files, symlink immediate parent directories, and nonregular files are rejected.
 Both effective roles must be configured before a decision can run. Manual edits and successful command saves apply on the next call without `/reload`.
 The former four `PI_MAGIC8BALL_*` model-selection variables are ignored.
@@ -131,15 +131,45 @@ A success returns:
 Confidence describes distribution concentration, not probability of correctness. The extension preserves confidence separately from the winning probability.
 Treat the result as evidence, not authorization or a command. The parent agent remains responsible for its action.
 
-An error returns `ok: false`, `error.kind`, `error.code`, `error.stage`, and completed-call usage.
+Probabilities are returned unchanged, without renormalization. Their sum must be within `0.000001` of one.
+For values on the four-decimal grid, the validator also permits rounding error up to `0.00005 × number of choices`, including abstention.
+It checks that bound in integer units. It does not round finer-precision values to qualify or relax range, key, confidence, or winner checks.
+
+Every result includes `usageComplete`. True means no provider request began, or all begun requests returned usage before the tool returned. False means some usage is unknown; reported zero tokens or cost does not prove zero billing. Completed rejected replies still count toward reported usage. Late completions cannot update returned totals.
+
+An error returns `ok: false`, `error.kind`, `error.code`, `error.stage`, and known completed-call usage.
 The code equals the error kind. Evidence failures can also include a fixed `error.evidenceCode` (see Context builder). Stages are `preparation`, `collection`, `validation`, and `classification`.
 The response contains no fabricated decision or raw provider error.
 
-The compact tool view shows the advisory choice, distribution, backend confidence, and reported cost.
+The call view shows the full sanitized question and supplied choice descriptions, with line breaks and wrapping. It does not change the inputs sent to the models.
+The compact tool view shows the advisory choice, distribution, backend confidence, reported input/output/cache-read/cache-write tokens, cost, and incomplete-usage warning when needed. Errors also show known usage.
 Expand the tool result to see facts, source IDs, inspected ranges, truncation, and uncertainties.
 Progress updates show the current stage without context text. Structured results remain available without terminal UI.
 Pi rejects arguments that fail the registered schema before the extension executes. Those errors use Pi's normal argument-error format.
 Pi marks the tool result as an error. Raw provider errors are not copied into the response.
+
+### Failure diagnostics
+
+Add `"diagnostics": true` to a tool call to include fixed `error.diagnostics.phase` and `category` hints on failure. Omission or false leaves those hints out; successful results do not include diagnostics. This flag does not enable transcript capture, change settings, or authorize another request.
+
+Phases distinguish input validation, preparation, builder requests, evidence calls, state validation, classification, and answer validation. Categories distinguish extension/local failures, terminal provider errors/aborts, and allowlisted HTTP/status-code hints such as authentication, rejection, rate limit, or transport. Unknown exceptions remain `unknown`. These are hints, not verified root causes. Raw error text, rejected state, credentials, headers, and thinking are not returned. Pi may persist tool arguments and these fixed hints in the parent transcript.
+
+## Invocation deadline
+
+The existing default stays **120000 milliseconds (two minutes)**. Set a different end-to-end deadline through the user command:
+
+```text
+/magic8ball timeout
+/magic8ball timeout 300000
+/magic8ball --project timeout 60000
+/magic8ball --project timeout default
+```
+
+The query reports effective milliseconds and source without writing or generating. A decimal integer from 1 through 2147483647 is accepted. `default` removes only that scope's explicit timeout. Commands work without configured models and preserve all other settings in that file. Model and reasoning saves preserve its timeout too.
+
+Optional root `timeoutMs` in `magic8ball.json` uses independent precedence: trusted project, global, then the two-minute default. A timeout-only project does not replace model roles; a model-only project inherits the global timeout. Untrusted project files remain unread. New invocations read fresh settings; changes cannot alter an in-flight invocation.
+
+The budget starts at invocation entry, including settings preparation. Settings resolution uses the default until the configured budget is known, then measures that budget from the original entry. Every builder/classifier request receives a positive integer remaining timeout and zero retries. The local deadline still returns when a provider ignores cancellation. A longer deadline is not a monetary cap or a guarantee that remote work stops.
 
 ## Builder reasoning
 
@@ -254,7 +284,7 @@ Each invocation permits at most:
 | Builder requests | 4 |
 | Evidence calls | 8 |
 | Builder output per request | 2048 requested tokens |
-| Total duration | 120000 milliseconds |
+| Total duration | Configured invocation deadline; default 120000 milliseconds |
 
 The last permitted builder request has no evidence tools and must return final state.
 The builder also receives no tools after eight evidence calls. Each request reports remaining counts and finalization status.
@@ -290,7 +320,7 @@ npm run verify
 
 The GitHub Actions workflow runs these commands on Node 24. Tests and CI make no model requests.
 
-The suite covers AC-1 through AC-20 from [the generated contract](docs/pi-magic8ball.md).
+The suite covers AC-1 through AC-24 from [the generated contract](docs/pi-magic8ball.md).
 The original 14 checks failed against the V1 no-op scaffold. All nine settings/command checks failed before the settings implementation.
 The two overflow checks and four compact-search checks failed before their respective picker changes. Cancellation checks passed before and after.
 Before the evidence and usability change, all 30 checks and strict TypeScript checking passed.
@@ -309,6 +339,14 @@ They also apply replacements through Pi's actual autocomplete provider, includin
 No live terminal check or paid call ran for this autocomplete change.
 Tests use temporary settings files, mock UI/model catalogs, model responses, terminal dimensions, and the nested-tool boundary.
 They use the installed Pi session projection and TypeBox schemas. They do not prove terminal rendering, live Jev/Clef behavior, calibration, or context-builder quality.
+
+### Advisor-derived reliability checks
+
+The preserved baseline passed all 59 tests and strict TypeScript checking. The first 12 reliability checks failed before implementation for missing timeout settings, request deadlines, usage completeness, diagnostics, and full call display. Added checks cover late preparation and a successful fourth-request finalization through the installed Responses adapter with mock SSE.
+
+Verification uses temporary settings, synthetic API keys, mock fetch, injected errors, and terminal dimensions. It does not establish live Jev/Clef interoperability, terminal appearance, calibrated confidence, or builder quality. No paid calls or live settings changes are part of these checks.
+
+Pi already defaults to short caching. Caching/replay behavior is unchanged; no new opaque state is retained. Evaluate benefits before adding replay complexity. The quality benchmark below still requires separate spending authorization.
 
 The canonical contract is document `pi-magic8ball` in the maintainer workspace documentation store.
 Author changes through checkout, preview, and import. Publish to this worktree with `docs_compile` and its project output root.

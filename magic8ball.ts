@@ -8,6 +8,7 @@ import { evidence } from './lib/evidence.ts';
 import { loadSettings, settingsPaths } from './lib/settings.ts';
 import { registerSettingsCommand } from './lib/settings-command.ts';
 import { TranscriptStore, type TranscriptRecorder } from './lib/transcripts.ts';
+import { DIAGNOSTIC_PHASES, DIAGNOSTIC_CATEGORIES } from './lib/execution.ts';
 import { assertReasoning } from './lib/reasoning.ts';
 
 const text = Type.String({ minLength: 1 });
@@ -19,10 +20,11 @@ const ModelSchema = Type.Object({ provider: text, model: text }, { additionalPro
 const BuilderModelSchema = Type.Object({ provider: text, model: text, reasoning: Type.Optional(Type.Union(REASONING_LEVELS.map(level => Type.Literal(level)))) }, { additionalProperties: false });
 const UsageSchema = Type.Object({ input: Type.Number(), output: Type.Number(), cacheRead: Type.Number(), cacheWrite: Type.Number(), totalTokens: Type.Number(), cost: Type.Object({ input: Type.Number(), output: Type.Number(), cacheRead: Type.Number(), cacheWrite: Type.Number(), total: Type.Number() }) });
 const OutputSchema = Type.Union([
-  Type.Object({ ok: Type.Literal(true), answer: text, probabilities: Type.Record(Type.String(), Type.Number({ minimum: 0, maximum: 1 })), confidence: Type.Number({ minimum: 0, maximum: 1 }), abstained: Type.Boolean(), advisory: Type.Literal(true), confidenceMeaning: text, state: StateSchema, models: Type.Object({ builder: BuilderModelSchema, classifier: ModelSchema }), collection: Type.Object({ conversationTruncated: Type.Boolean(), evidenceCalls: Type.Integer(), sources: strings, evidence: Type.Array(CollectedSchema) }), usage: UsageSchema }, { additionalProperties: false }),
-  Type.Object({ ok: Type.Literal(false), error: Type.Object({ kind: text, code: text, stage: Type.Union([Type.Literal('preparation'), Type.Literal('collection'), Type.Literal('validation'), Type.Literal('classification')]), message: text, evidenceCode: Type.Optional(Type.Union(EVIDENCE_FAILURE_CODES.map(code => Type.Literal(code)))) }), usage: UsageSchema }, { additionalProperties: false })
+  Type.Object({ ok: Type.Literal(true), answer: text, probabilities: Type.Record(Type.String(), Type.Number({ minimum: 0, maximum: 1 })), confidence: Type.Number({ minimum: 0, maximum: 1 }), abstained: Type.Boolean(), advisory: Type.Literal(true), confidenceMeaning: text, state: StateSchema, models: Type.Object({ builder: BuilderModelSchema, classifier: ModelSchema }), collection: Type.Object({ conversationTruncated: Type.Boolean(), evidenceCalls: Type.Integer(), sources: strings, evidence: Type.Array(CollectedSchema) }), usage: UsageSchema, usageComplete: Type.Boolean() }, { additionalProperties: false }),
+  Type.Object({ ok: Type.Literal(false), error: Type.Object({ kind: text, code: text, stage: Type.Union([Type.Literal('preparation'), Type.Literal('collection'), Type.Literal('validation'), Type.Literal('classification')]), message: text, evidenceCode: Type.Optional(Type.Union(EVIDENCE_FAILURE_CODES.map(code => Type.Literal(code)))), diagnostics: Type.Optional(Type.Object({ phase: Type.Union(DIAGNOSTIC_PHASES.map(phase => Type.Literal(phase))), category: Type.Union(DIAGNOSTIC_CATEGORIES.map(category => Type.Literal(category))) }, { additionalProperties: false })) }, { additionalProperties: false }), usage: UsageSchema, usageComplete: Type.Boolean() }, { additionalProperties: false })
 ]);
 const InputSchema = Type.Object({
+  diagnostics: Type.Optional(Type.Boolean({ description: 'Opt in to fixed failure phase/category hints. No raw provider errors.' })),
   question: text,
   responses: Type.Record(Type.String(), text, { minProperties: 2, maxProperties: 26, description: 'Response identifiers mapped to mandatory descriptions. Default abstention reserves one of 26 choices.' }),
   abstain: Type.Optional(Type.Boolean({ description: 'Add insufficient_evidence. Default true.' })),
@@ -41,8 +43,10 @@ function dependencies(ctx: ExtensionToolContext, transcript?: TranscriptRecorder
   let classifier: ClassifierModel<ClassifierApi> | undefined;
   let reasoning: BuilderReasoning | undefined;
   return {
-    async prepare() {
-      const models = readConfig((await loadSettings(settingsPaths(ctx.cwd, getAgentDir()), ctx.isProjectTrusted())).settings);
+    async prepare(execution) {
+      const loaded = await loadSettings(settingsPaths(ctx.cwd, getAgentDir()), ctx.isProjectTrusted());
+      execution.configure(loaded.settings.timeoutMs ?? LIMITS.timeoutMs);
+      const models = readConfig(loaded.settings);
       builder = ctx.modelRegistry.find(models.builder.provider, models.builder.model);
       classifier = ctx.modelRegistry.findOfType('classifier', models.classifier.provider, models.classifier.model);
       if (!builder || builder.api === 'pi-virtual' || !classifier) throw new DecisionError('model-unavailable');
@@ -50,13 +54,14 @@ function dependencies(ctx: ExtensionToolContext, transcript?: TranscriptRecorder
       assertReasoning(builder, reasoning);
       return models;
     },
-    async build(request, signal, recordUsage) {
+    async build(request, signal, recordUsage, execution) {
       if (!builder) throw new DecisionError('model-unavailable');
       const selected = builder;
       return buildState(request, {
         tools: EVIDENCE_TOOLS.map(({ name, description, parameters }) => ({ name, description, parameters })) as Tool[],
         conversation: request.context.conversation ? ctx.sessionManager.buildSessionProjection().messages : [],
         reasoning,
+        execution,
         recordEvidence: message => transcript?.evidenceResult(message),
         recordFailure: (name, id, code) => transcript?.evidenceFailure(name, id, code),
         complete: async (context, _signal, options) => {
@@ -71,11 +76,12 @@ function dependencies(ctx: ExtensionToolContext, transcript?: TranscriptRecorder
         }
       }, signal, recordUsage);
     },
-    async classify(request, state, signal) {
+    async classify(request, state, signal, execution) {
       if (!classifier) throw new DecisionError('model-unavailable');
       const context = { state, questions: { decision: { type: 'choice' as const, instructions: request.question, criteria: request.responses } } };
       transcript?.classifierRequest({ provider: classifier.provider, model: classifier.id }, context);
-      const result = await ctx.modelRegistry.classify(classifier, context, { signal, maxRetries: 0 });
+      const selected = classifier;
+      const result = await ctx.modelRegistry.classify(selected, context, { signal, timeoutMs: execution.remaining(), maxRetries: 0 });
       transcript?.classifierResponse(result);
       return result;
     }
@@ -110,7 +116,7 @@ export default function magic8ball(pi: ExtensionAPI): void {
     promptGuidelines: ['Treat magic8ball results as advisory evidence. You remain responsible for decisions and authorization.'],
     parameters: InputSchema, outputSchema: OutputSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: true },
-    renderCall: (args, theme) => renderQuestion(args.question, text => theme.fg('accent', text)),
+    renderCall: (args, theme) => renderQuestion(args.question, text => theme.fg('accent', text), args.responses),
     renderResult: (result, options, theme) => renderDecision(result.details, options.expanded, options.isPartial, text => theme.fg('toolOutput', text)),
     async execute(_id, args, signal, update, ctx) {
       const transcript = transcripts.begin(_id);

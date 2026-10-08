@@ -1,5 +1,6 @@
 import type { ModelThinkingLevel, Usage } from '@earendil-works/pi-ai';
 import { permittedFilePath } from './paths.ts';
+import { Execution, type FailureDiagnostics } from './execution.ts';
 
 export const LIMITS = Object.freeze({ requestBytes: 16000, stateBytes: 12000, conversationBytes: 24000, evidenceBytes: 16000, builderRequests: 4, evidenceCalls: 8, outputTokens: 2048, timeoutMs: 120000 });
 export const ABSTENTION = 'insufficient_evidence';
@@ -39,11 +40,11 @@ export type DecisionStage = 'preparation' | 'collection' | 'validation' | 'class
 export type DecisionProgress = { stage: DecisionStage };
 export type RecordUsage = (usage?: Partial<Usage>) => void;
 export type DecisionDependencies = {
-  prepare(): Promise<ModelSelection>;
-  build(request: DecisionRequest, signal: AbortSignal, recordUsage: RecordUsage): Promise<{ text: string; collection: Collection }>;
-  classify(request: DecisionRequest, state: DecisionState, signal: AbortSignal): Promise<unknown>;
+  prepare(execution: Execution): Promise<ModelSelection>;
+  build(request: DecisionRequest, signal: AbortSignal, recordUsage: RecordUsage, execution: Execution): Promise<{ text: string; collection: Collection }>;
+  classify(request: DecisionRequest, state: DecisionState, signal: AbortSignal, execution: Execution): Promise<unknown>;
 };
-export type DecisionResult = ({ ok: true; answer: string; probabilities: Record<string, number>; confidence: number; abstained: boolean; advisory: true; confidenceMeaning: string; state: DecisionState; models: ModelSelection; collection: Collection } | { ok: false; error: { kind: ErrorKind; code: ErrorKind; stage: DecisionStage; message: string; evidenceCode?: EvidenceFailureCode } }) & { usage: Usage };
+export type DecisionResult = ({ ok: true; answer: string; probabilities: Record<string, number>; confidence: number; abstained: boolean; advisory: true; confidenceMeaning: string; state: DecisionState; models: ModelSelection; collection: Collection } | { ok: false; error: { kind: ErrorKind; code: ErrorKind; stage: DecisionStage; message: string; evidenceCode?: EvidenceFailureCode; diagnostics?: FailureDiagnostics } }) & { usage: Usage; usageComplete: boolean };
 
 export function object(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value) && [Object.prototype, null].includes(Object.getPrototypeOf(value));
@@ -55,11 +56,12 @@ function nonempty(value: unknown): value is string { return typeof value === 'st
 
 export function validateRequest(input: unknown): DecisionRequest {
   const bad = () => { throw new DecisionError('invalid-input'); };
-  if (!object(input) || !exactKeys(input, ['question', 'responses', 'abstain', 'context'], ['question', 'responses'])) return bad();
+  if (!object(input) || !exactKeys(input, ['question', 'responses', 'abstain', 'context', 'diagnostics'], ['question', 'responses'])) return bad();
   if (!nonempty(input.question) || !object(input.responses) || (Object.hasOwn(input, 'abstain') && typeof input.abstain !== 'boolean')) return bad();
   let serialized: string;
   try { serialized = JSON.stringify(input); } catch { return bad(); }
   if (Buffer.byteLength(serialized) > LIMITS.requestBytes) return bad();
+  if (Object.hasOwn(input, 'diagnostics') && typeof input.diagnostics !== 'boolean') return bad();
   const abstain = input.abstain !== false;
   const entries = Object.entries(input.responses);
   if (entries.length < 2 || entries.length > (abstain ? 25 : 26)) return bad();
@@ -100,9 +102,14 @@ export function parseState(text: string, sourceIds?: readonly string[]): Decisio
   return state as DecisionState;
 }
 
-export function parseSettings(value: unknown): Partial<ModelSelection> {
-  if (!object(value) || !exactKeys(value, ['builder', 'classifier'], [])) throw new DecisionError('invalid-config');
-  const settings: Partial<ModelSelection> = {};
+export type DecisionSettings = Partial<ModelSelection> & { timeoutMs?: number };
+export function parseSettings(value: unknown): DecisionSettings {
+  if (!object(value) || !exactKeys(value, ['builder', 'classifier', 'timeoutMs'], [])) throw new DecisionError('invalid-config');
+  const settings: DecisionSettings = {};
+  if (Object.hasOwn(value, 'timeoutMs')) {
+    if (typeof value.timeoutMs !== 'number' || !Number.isInteger(value.timeoutMs) || value.timeoutMs < 1 || value.timeoutMs > 2147483647) throw new DecisionError('invalid-config');
+    settings.timeoutMs = value.timeoutMs;
+  }
   for (const role of ['builder', 'classifier'] as const) {
     if (!Object.hasOwn(value, role)) continue;
     const pair = value[role];
@@ -122,6 +129,15 @@ export function readConfig(value: unknown): ModelSelection {
   return { builder: settings.builder, classifier: settings.classifier };
 }
 
+// Range and finiteness checks precede this sum check. Returned values are never rewritten.
+function validProbabilitySum(values: number[]): boolean {
+  if (Math.abs(values.reduce((a, b) => a + b, 0) - 1) <= .000001) return true;
+  const units = values.map(value => Math.round(value * 10000));
+  if (!values.every((value, index) => value === units[index] / 10000)) return false;
+  // Each four-decimal value can contribute at most half a unit of rounding error.
+  return 2 * Math.abs(units.reduce((a, b) => a + b, 0) - 10000) <= values.length;
+}
+
 function validateAnswer(result: unknown, responses: Record<string, string>) {
   if (!object(result) || result.stopReason !== 'stop') throw new DecisionError('classifier-failed');
   const answer = object(result.answers) ? result.answers.decision : undefined;
@@ -132,7 +148,7 @@ function validateAnswer(result: unknown, responses: Record<string, string>) {
   const probability = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= 1;
   if (!probability(answer.confidence) || !Object.values(answer.probabilities).every(probability)) return bad();
   const probabilities = answer.probabilities as Record<string, number>;
-  if (Math.abs(Object.values(probabilities).reduce((a, b) => a + b, 0) - 1) > .000001) return bad();
+  if (!validProbabilitySum(Object.values(probabilities))) return bad();
   if (probabilities[answer.choice] !== Math.max(...Object.values(probabilities))) return bad();
   return { answer: answer.choice, confidence: answer.confidence, probabilities: { ...probabilities } };
 }
@@ -150,24 +166,20 @@ export function addUsage(total: Usage, usage?: Partial<Usage>): void {
 // The deadline also bounds a provider promise that does not honor its abort signal.
 export async function decide(input: unknown, deps: DecisionDependencies, external?: AbortSignal, timeoutMs = LIMITS.timeoutMs, onProgress?: (progress: DecisionProgress) => void): Promise<DecisionResult> {
   const usage = emptyUsage();
-  const controller = new AbortController();
-  let abortKind: 'cancelled' | 'timeout' = 'cancelled';
+  const execution = new Execution(timeoutMs, external);
   let stage: ErrorKind = 'model-unavailable';
   let phase: DecisionStage = 'preparation';
   const progress = (next: DecisionStage) => {
+    execution.check();
     phase = next;
     // Display failures must not change decision behavior.
     try { onProgress?.({ stage: next }); } catch { /* No raw UI errors in model context. */ }
   };
-  const cancel = () => controller.abort();
-  const timeout = setTimeout(() => { abortKind = 'timeout'; controller.abort(); }, timeoutMs);
-  external?.addEventListener('abort', cancel, { once: true });
-  if (external?.aborted) cancel();
-  const signal = controller.signal;
-  const check = () => { if (signal.aborted) throw new DecisionError(abortKind); };
+  const signal = execution.signal;
+  const check = () => execution.check();
   let rejectAbort: () => void = () => {};
   const aborted = new Promise<never>((_resolve, reject) => {
-    rejectAbort = () => reject(new DecisionError(abortKind));
+    rejectAbort = () => { try { execution.check(); } catch (error) { reject(error); } };
     signal.addEventListener('abort', rejectAbort, { once: true });
   });
   try {
@@ -175,27 +187,37 @@ export async function decide(input: unknown, deps: DecisionDependencies, externa
     const request = validateRequest(input);
     const operation = async (): Promise<DecisionResult> => {
       progress('preparation');
-      const models = await deps.prepare(); check();
+      execution.setPhase('preparation');
+      const models = await deps.prepare(execution); check();
       stage = 'builder-failed'; progress('collection');
-      const built = await deps.build(request, signal, u => addUsage(usage, u)); check();
+      execution.setPhase('builder');
+      const built = await deps.build(request, signal, u => { if (execution.accepting) addUsage(usage, u); }, execution); check();
       progress('validation');
+      execution.setPhase('state-validation');
       const state = parseState(built.text, built.collection.evidence?.map(source => source.id) ?? []);
       stage = 'classifier-failed'; progress('classification');
-      const raw = await deps.classify(request, state, signal);
-      if (object(raw) && object(raw.usage)) addUsage(usage, raw.usage as Partial<Usage>);
+      execution.setPhase('classifier');
+      const raw = await execution.provider('classifier', async () => {
+        const result = await deps.classify(request, state, signal, execution);
+        if (execution.accepting && object(result) && object(result.usage)) addUsage(usage, result.usage as Partial<Usage>);
+        return result;
+      });
       check();
+      // Terminal provider failures retain their provider diagnostic category.
+      if (object(raw) && raw.stopReason === 'stop') execution.setPhase('answer-validation');
       const answer = validateAnswer(raw, request.responses);
-      return { ok: true, ...answer, abstained: answer.answer === ABSTENTION, advisory: true, confidenceMeaning: 'Distribution concentration, not probability of correctness.', state, models, collection: built.collection, usage };
+      check();
+      return { ok: true, ...answer, abstained: answer.answer === ABSTENTION, advisory: true, confidenceMeaning: 'Distribution concentration, not probability of correctness.', state, models, collection: built.collection, usage: structuredClone(usage), usageComplete: execution.usageComplete };
     };
     return await Promise.race([operation(), aborted]);
   } catch (error) {
-    const candidate = error !== null && typeof error === 'object' && 'kind' in error ? error.kind : undefined;
-    const kind: ErrorKind = signal.aborted ? abortKind : typeof candidate === 'string' && Object.hasOwn(MESSAGES, candidate) ? candidate as ErrorKind : stage;
+    // Cancellation/deadline takes precedence even if a provider rejects during abort.
+    if (signal.aborted) { try { execution.check(); } catch (aborted) { error = aborted; } }
+    const kind: ErrorKind = error instanceof DecisionError ? error.kind : stage;
     // Copy usage so late provider completion cannot mutate a returned error.
-    return { ok: false, error: { kind, code: kind, stage: phase, message: MESSAGES[kind], ...(kind === 'evidence-failed' && error instanceof DecisionError && isEvidenceFailureCode(error.evidenceCode) ? { evidenceCode: error.evidenceCode } : {}) }, usage: structuredClone(usage) };
+    return { ok: false, error: { kind, code: kind, stage: phase, message: MESSAGES[kind], ...(kind === 'evidence-failed' && error instanceof DecisionError && isEvidenceFailureCode(error.evidenceCode) ? { evidenceCode: error.evidenceCode } : {}), ...(object(input) && input.diagnostics === true ? { diagnostics: execution.diagnostics(error) } : {}) }, usage: structuredClone(usage), usageComplete: execution.usageComplete };
   } finally {
-    clearTimeout(timeout);
-    external?.removeEventListener('abort', cancel);
+    execution.finish();
     signal.removeEventListener('abort', rejectAbort);
   }
 }

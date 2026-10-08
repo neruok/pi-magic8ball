@@ -23,6 +23,6 @@ export default async function adapter() {
         complete: (context, signal, options) => runtime.streamSimple(selected, context, { ...options, signal, maxRetries: 0 }).result(),
       };
     }),
-    classify: (request, state, signal) => runtime.classify(classifier, { state, questions: { decision: { type: 'choice', instructions: request.question, criteria: request.responses } } }, { signal, maxRetries: 0 }),
+    classify: (request, state, signal, execution) => runtime.classify(classifier, { state, questions: { decision: { type: 'choice', instructions: request.question, criteria: request.responses } } }, { signal, timeoutMs: execution.remaining(), maxRetries: 0 }),
   };
 }

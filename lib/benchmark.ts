@@ -59,7 +59,7 @@ export async function runBenchmark(configurations: BenchmarkConfiguration[], cla
     const responses = entry.order === 'forward' ? { A: 'Keep the local offline implementation.', B: 'Use a hosted service that requires network access.' } : { B: 'Use a hosted service that requires network access.', A: 'Keep the local offline implementation.' };
     const result = await decide({ question: `(${fixture.id}) Which deployment strategy follows the available constraints? Abstain when material constraints are unknown or conflicting.`, responses, context: { conversation: true, workspace: false } }, {
       prepare: async () => config.models,
-      build: entry.mode === 'direct' ? async () => ({ text: JSON.stringify(reference), collection }) : (request, signal, recordUsage) => buildState(request, { tools: [], conversation, complete: config.complete, executeTool: async () => { throw new Error('Workspace tools are disabled in the benchmark.'); } }, signal, recordUsage),
+      build: entry.mode === 'direct' ? async () => ({ text: JSON.stringify(reference), collection }) : (request, signal, recordUsage, execution) => buildState(request, { execution, tools: [], conversation, complete: config.complete, executeTool: async () => { throw new Error('Workspace tools are disabled in the benchmark.'); } }, signal, recordUsage),
       classify,
     }, options.signal);
     rows.push(row(entry, fixture, result, config.models));

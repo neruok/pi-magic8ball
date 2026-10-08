@@ -44,11 +44,11 @@ async function fixture(t) {
 
 test('AC-20 completes command grammar, scope flags, and isolated transcript actions', async t => {
   const f = await fixture(t);
-  assert.deepEqual(new Set(await f.values('')), new Set(['show', 'builder', 'classifier', 'reasoning', 'transcripts', '--global', '--project']));
+  assert.deepEqual(new Set(await f.values('')), new Set(['show', 'builder', 'classifier', 'reasoning', 'timeout', 'transcripts', '--global', '--project']));
   assert.deepEqual(await f.values('rea'), ['reasoning']);
   assert.deepEqual(await f.values('--p'), ['--project']);
   for (const scope of ['--global', '--project']) {
-    assert.deepEqual(new Set(await f.values(`${scope} `)), new Set(['show', 'builder', 'classifier', 'reasoning'].map(s => `${scope} ${s}`)));
+    assert.deepEqual(new Set(await f.values(`${scope} `)), new Set(['show', 'builder', 'classifier', 'reasoning', 'timeout'].map(s => `${scope} ${s}`)));
     assert.deepEqual(await f.values(`${scope} sho`), [`${scope} show`]);
   }
   assert.deepEqual(await f.values('transcripts '), ['transcripts on', 'transcripts off', 'transcripts show']);
