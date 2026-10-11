@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { ExtensionSelectorComponent, initTheme } from '@earendil-works/pi-coding-agent';
 import { fuzzyFilter, visibleWidth } from '@earendil-works/pi-tui';
 import extension from '../magic8ball.ts';
+import { stateStream } from './helpers/state.mjs';
 import { settingsPaths, loadSettings, saveSettingsPatch } from '../lib/settings.ts';
 
 const models = { builder: { provider: 'cheap', model: 'small' }, classifier: { provider: 'typesafe', model: 'jev-latest' } };
@@ -34,7 +35,7 @@ async function fixture(t) {
       findOfType: (type, p, m) => type === 'classifier' ? classifiers.find(x => x.provider === p && x.id === m) : undefined,
       getAvailable: () => [...chat, { provider: 'pi-virtual', id: 'router', api: 'pi-virtual' }],
       getAvailableOfType: async type => { assert.equal(type, 'classifier'); return classifiers; },
-      streamSimple: (model) => { calls.push(['builder', model.provider, model.id]); return { result: async () => ({ content: [{ type: 'text', text: JSON.stringify(state) }], stopReason: 'stop', usage }) }; },
+      streamSimple: stateStream((model) => { calls.push(['builder', model.provider, model.id]); return { result: async () => ({ content: [{ type: 'text', text: JSON.stringify(state) }], stopReason: 'stop', usage }) }; }),
       classify: async model => { calls.push(['classifier', model.provider, model.id]); return { stopReason: 'stop', usage, answers: { decision: { type: 'choice', choice: 'a', probabilities: { a: .8, b: .1, insufficient_evidence: .1 }, confidence: .4 } } }; }
     },
     ui: { notify: (text, level) => notices.push({ text, level }), select: async (title, options) => { selects.push({ title, options }); return options[0]; } }

@@ -7,7 +7,7 @@ import { spawnSync } from 'node:child_process';
 import { visibleWidth } from '@earendil-works/pi-tui';
 import { Compile } from 'typebox/compile';
 import extension from '../magic8ball.ts';
-import { buildState } from '../lib/builder.ts';
+import { buildFixtureState as buildState, stateCompletion, stateStream } from './helpers/state.mjs';
 import { validateRequest, decide, emptyUsage, parseState } from '../lib/decision.ts';
 import { evidence } from '../lib/evidence.ts';
 import { benchmarkPlan, runBenchmark } from '../lib/benchmark.ts';
@@ -26,26 +26,19 @@ const noCollection = { conversationTruncated: false, evidenceCalls: 0, sources: 
 const deps = (overrides = {}) => ({ prepare: async () => models, build: async () => ({ text: JSON.stringify(state), collection: noCollection }), classify: async () => answer(), ...overrides });
 const registrations = () => { const registered = new Map(); extension({ on() {}, registerTool: t => registered.set(t.name, t), registerCommand() {} }); return registered; };
 
-test('AC-11 reserves final request and finalizes after the evidence ceiling', async () => {
+test('AC-33 no count-based finalization for sequential or batched exploration', async () => {
   for (const many of [false, true]) {
     let requests = 0, calls = 0;
     const built = await buildState(validateRequest(input), { tools, conversation: [], complete: async context => {
       requests++;
-      const final = requests === (many ? 2 : 4);
-      if (final) {
-        assert.deepEqual(context.tools, []);
-        assert.match(context.systemPrompt, /finalize.*true/i);
-        assert.match(context.systemPrompt, /remaining/i);
-        return message([{ type: 'text', text: JSON.stringify(state) }]);
-      }
-      return message(many ? Array.from({ length: 8 }, (_, i) => toolCall(String(i))) : [toolCall(String(requests))], 'toolUse');
+      assert.equal(context.tools.length, 6);
+      assert.doesNotMatch(context.systemPrompt, /requestsRemaining|finalize/);
+      if (requests === (many ? 2 : 10)) return message([{ type: 'text', text: JSON.stringify(state) }]);
+      return message(many ? Array.from({ length: 10 }, (_, i) => toolCall(String(i))) : [toolCall(String(requests))], 'toolUse');
     }, executeTool: async () => { calls++; return toolResult(); } }, new AbortController().signal, () => {});
     assert.deepEqual(JSON.parse(built.text), state);
-    assert.equal(calls, many ? 8 : 3);
+    assert.equal(calls, many ? 10 : 9);
   }
-  let n = 0, calls = 0;
-  await assert.rejects(buildState(validateRequest(input), { tools, conversation: [], complete: async () => message([toolCall(String(++n))], 'toolUse'), executeTool: async () => { calls++; return toolResult(); } }, new AbortController().signal, () => {}));
-  assert.equal(calls, 3, 'last-turn evidence must not execute');
 });
 
 test('AC-12 file hints remain data and invalid hints fail before models', async () => {
@@ -109,11 +102,11 @@ test('AC-14 benchmark compares configurations and orders without implicit spend'
   assert.equal(plan.length, 24);
   assert.deepEqual(new Set(plan.map(p => p.caseId)), new Set(['missing', 'conflicting', 'injected', 'decisive']));
   let builders = 0, classifiers = 0;
-  const configs = ['small', 'other'].map(name => ({ name, models, complete: async context => {
+  const configs = ['small', 'other'].map(name => ({ name, models, complete: stateCompletion(async context => {
     builders++;
     const data = JSON.parse(context.messages[0].content);
     return message([{ type: 'text', text: JSON.stringify({ ...state, current_state: [data.conversation_context], uncertainties: ['missing', 'conflict'] }) }]);
-  } }));
+  }) }));
   const classify = async request => {
     classifiers++;
     const choice = /^\((missing|conflicting)\)/.test(request.question) ? 'insufficient_evidence' : 'A';
@@ -142,7 +135,7 @@ test('AC-14 benchmark compares configurations and orders without implicit spend'
     await writeFile(adapter, `import { writeFileSync } from 'node:fs'; writeFileSync(${JSON.stringify(marker)}, 'imported'); throw new Error('PRIVATE_PROVIDER_ERROR');`);
     const command = new URL('../scripts/benchmark.mjs', import.meta.url).pathname;
     const dry = spawnSync(process.execPath, [command, '--dry-run', '--adapter', adapter, '--config', 'small'], { encoding: 'utf8' });
-    assert.equal(dry.status, 0); assert.equal(JSON.parse(dry.stdout).maxModelCalls, 48);
+    assert.equal(dry.status, 0); assert.equal(JSON.parse(dry.stdout).maxModelCalls, null);
     await assert.rejects(readFile(marker), e => e.code === 'ENOENT');
     const denied = spawnSync(process.execPath, [command, '--adapter', adapter], { encoding: 'utf8' });
     assert.equal(denied.status, 1); await assert.rejects(readFile(marker), e => e.code === 'ENOENT');
@@ -180,7 +173,7 @@ test('AC-15 progress, stage diagnostics and compact/expanded rendering are safe'
   try {
     process.env.PI_CODING_AGENT_DIR = root;
     await writeFile(join(root, 'magic8ball.json'), JSON.stringify(models));
-    const ctx = { cwd: root, isProjectTrusted: () => false, sessionManager: { buildSessionProjection: () => ({ messages: [] }) }, modelRegistry: { find: () => ({ api: 'test' }), findOfType: () => ({}), streamSimple: () => ({ result: async () => message([{ type: 'text', text: JSON.stringify(state) }]) }), classify: async () => answer() } };
+    const ctx = { cwd: root, isProjectTrusted: () => false, sessionManager: { buildSessionProjection: () => ({ messages: [] }) }, modelRegistry: { find: () => ({ api: 'test' }), findOfType: () => ({}), streamSimple: stateStream(() => ({ result: async () => message([{ type: 'text', text: JSON.stringify(state) }]) })), classify: async () => answer() } };
     const updates = [];
     const done = await main.execute('main', input, undefined, update => updates.push(update), ctx);
     assert.equal(done.isError, false);

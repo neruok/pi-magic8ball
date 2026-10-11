@@ -2,20 +2,20 @@
 
 An advisory choice tool for Pi. A lightweight context builder collects neutral state. Jev or Clef then returns a choice distribution.
 
-The builder does not choose or rank responses. Its output has a fixed schema. Schema validation cannot prove neutrality or factual accuracy.
+The builder does not choose or rank responses. Private tools update extension-owned state with a fixed schema; final model prose is ignored. Schema validation cannot prove neutrality or factual accuracy.
 
 Configured providers can incur charges. They receive the context you permit the tool to collect.
 Results are advisory evidence, not authorization or execution commands. Confidence measures distribution concentration, not correctness.
 
 ## Install and load
 
-Requires Node.js 24 or newer. Pi 1.0.4 is the tested host version.
-Later Pi versions are not yet verified. Runtime peers use `*` as Pi requires, not as a compatibility guarantee.
+Requires Node.js 24 or newer. Offline verification covers Pi 1.0.4 and 1.1.0.
+Live provider and terminal compatibility are not established by these checks. Runtime peers use `*` as Pi requires, not as a compatibility guarantee.
 
 After npm publication, install the pinned release:
 
 ```bash
-pi install npm:@neruok/pi-magic8ball@0.1.1
+pi install npm:@neruok/pi-magic8ball@0.1.2
 ```
 
 Or install from the repository:
@@ -36,7 +36,7 @@ pi -e /absolute/path/to/pi-magic8ball/magic8ball.ts
 
 The local invocation does not change package settings. Pi supplies the host packages listed in `package.json`.
 
-The release candidate is `@neruok/pi-magic8ball@0.1.1`, licensed under [MIT](LICENSE).
+The release candidate is `@neruok/pi-magic8ball@0.1.2`, licensed under [MIT](LICENSE).
 Release preparation does not publish the package. Registry ownership and publication credentials still require verification.
 
 ## Configure models
@@ -109,7 +109,7 @@ Nonparticipating writers can race validation; these checks are not an OS sandbox
 Other Jev and Clef catalog entries work through the same Pi classifier API, including `@cf/cloudflare/clef-flash`.
 Use Pi's normal provider authentication. Do not put API keys in `magic8ball.json`, tool arguments, or this repository.
 
-The builder must be a chat model that supports tool calls and JSON output. Select a small physical model, not a decision model.
+The builder must be a chat model that supports tool calls. It does not need to emit a final JSON state response. Select a small physical model, not a decision model.
 The extension rejects Pi virtual-model entries before requests. This prevents a router from adding hidden model calls.
 Model size alone does not establish evidence quality. One live smoke call completed both model stages with conversation context only.
 It returned a valid advisory distribution without abstention. This does not establish calibration or context-builder quality.
@@ -282,7 +282,7 @@ Other supported levels are forwarded on every builder request. The classifier is
 Model commands and the two-model picker replace complete roles, so selecting a model without a reasoning field resets it to the legacy default. Set a level after selecting models.
 
 More reasoning can increase latency and charges. The 2048-token output hint remains; some adapters add or adjust thinking budgets within model limits.
-Existing request/tool ceilings and the deadline still apply. Neither reasoning levels nor token hints are a fixed monetary budget or a guarantee of better evidence gathering.
+Context/byte bounds and the deadline still apply; there are no request or tool-call count ceilings. Neither reasoning levels nor token hints are a fixed monetary budget or a guarantee of better evidence gathering.
 Explicit configuration appears in builder model metadata and the expanded result. Captured requests show the requested level and safe token/retry options; responses show native effort only when the SDK supplies it.
 Hidden reasoning content remains excluded.
 
@@ -316,6 +316,20 @@ After loading a changed extension with `/reload`, enable capture before the call
 The builder runs a separate model loop with an in-memory transcript. It loads no extensions or inherited agent roles.
 Its evidence calls use the parent's `ctx.executeTool`, so Pi's validation and permission hooks still run.
 
+Five private tools build invocation-local state:
+
+- `magic8ball_set_goal`
+- `magic8ball_set_constraints`
+- `magic8ball_set_observations` (sets `current_state`)
+- `magic8ball_set_evidence`
+- `magic8ball_set_uncertainties`
+
+Each accepts exactly `{ value }` and replaces its whole section, which allows correction or removal of entries.
+Updates validate their shape, citations, and the serialized state byte limit before committing.
+These tools change memory only. They are not in the parent's tool catalog, do not use parent tool hooks, and never reach the classifier.
+All five sections must be explicitly initialized, including empty arrays. The builder then stops normally without tool calls.
+There is no submission tool or final-JSON fallback. Incomplete state, invalid updates, abnormal endings, or cancellation prevent classification.
+
 For an unknown directory layout, its instructions say to list the parent, wait for the result, then use exact returned names for child paths.
 Independent calls can still be grouped. Instructions alone cannot prove that the builder follows this procedure.
 
@@ -330,7 +344,7 @@ They have the same path restrictions when called directly.
 
 A permitted missing read/list/search path returns a `path-not-found` observation, not a tool error.
 This can occur only during the guarded path walk after validating arguments and all existing ancestors. Root failures and later I/O races remain errors.
-Missing paths receive collector IDs and status metadata, consume evidence-call budget, and can inform later builder calls within the same limits.
+Missing paths receive collector IDs and status metadata, count as workspace calls for reporting, and can inform later builder calls within the context bounds and deadline.
 They are absence observations, not file content. There is no automatic application retry.
 
 Restricted paths, symlinks, wrong types, invalid arguments/text, access denials, and other I/O errors remain hard failures.
@@ -355,7 +369,7 @@ A window can start inside a line. Its first numbered line is then a fragment.
 Truncation marks uninspected prefixes, tails, and output clipping. It does not imply all inspected bytes appear in the output.
 Lists inspect at most 200 entries and use one extra entry to detect overflow. Results show truncation explicitly.
 
-The collector assigns `conversation` to nonempty permitted conversation and `e1` through `e8` to successful workspace calls.
+The collector assigns `conversation` to nonempty permitted conversation and `e1`, `e2`, and subsequent IDs to successful workspace calls, without a count ceiling.
 It also assigns `supplied1` through `supplied8` to supplemental entries, with caller labels kept separately from IDs.
 Final state evidence must cite these IDs, not file paths or invented sources. Unknown citations fail before classification.
 The source ledger contains metadata, not file contents. Source validation cannot prove that a claim follows from its source.
@@ -364,7 +378,7 @@ The builder receives bounded active-branch context with context edits and compac
 Known earlier magic8ball tool results are omitted. Ordinary assistant text remains, even beside a magic8ball tool call.
 Tool-call blocks and their arguments are omitted. A conversation quotation or compaction summary can still contain earlier decisions or probabilities.
 
-There is no shell, Git execution, web access, write tool, classifier tool, or recursive subagent tool in the builder.
+There is no shell, Git execution, web access, filesystem write tool, classifier tool, or recursive subagent tool in the builder.
 
 ### Limits
 
@@ -377,15 +391,18 @@ Each invocation permits at most:
 | Serialized supplied entry, including optional label | 8192 UTF-8 bytes |
 | Serialized supplied array, including separators | 32768 UTF-8 bytes |
 | Conversation text | 24000 UTF-8 bytes, retaining the end |
-| Final state | 12000 UTF-8 bytes |
-| Builder requests | 4 |
-| Evidence calls | 8 |
+| Serialized owned state, after every update | 12000 UTF-8 bytes |
+| Builder requests, workspace calls, and state updates | No count ceiling |
 | Builder output per request | 2048 requested tokens |
 | Total duration | Configured invocation deadline; default 120000 milliseconds |
 
-The last permitted builder request has no evidence tools and must return final state.
-The builder also receives no tools after eight evidence calls. Each request reports remaining counts and finalization status.
-Tool calls during finalization fail without execution. Eight calls bound inspected file bytes to at most 128000 per invocation.
+Tools remain available until completion or failure; there is no forced finalization turn.
+Each request includes the current owned state, initialized sections, available source IDs, and the complete logical transcript.
+When a model advertises a context window, each request is checked before invocation using `ceil(serialized characters / 3.5)`.
+The builder check includes prompt, tools, history, state, and source IDs, plus a 2048-token output reserve.
+The classifier check includes validated state, question, and choices. An over-window estimate fails as `budget-exhausted` before a provider call.
+This is a heuristic, not exact tokenization. Without advertised window metadata, the preflight check cannot apply.
+The extension does not evict history, summarize it with another model, or impose a total inspected-file byte ceiling.
 The extension makes one classifier request after valid state. It makes no application-level retries or model fallbacks.
 It requests `maxRetries: 0` from providers. Provider adapters can have their own transport behavior.
 Token caps depend on provider support. These limits are not a monetary budget. Configured provider calls can incur charges.
@@ -440,7 +457,7 @@ Do not edit the generated contract directly.
 
 ### Before npm publication
 
-The selected release is `@neruok/pi-magic8ball@0.1.1` under MIT. The manifest sets public access for the scoped package.
+The selected release is `@neruok/pi-magic8ball@0.1.2` under MIT. The manifest sets public access for the scoped package.
 
 1. Confirm the manifest and lockfile identify the intended release.
 2. Run `npm ci --ignore-scripts` and `npm run verify` in a clean checkout.
@@ -459,9 +476,9 @@ Inspect the call plan without loading providers, adapters, or credentials:
 npm run benchmark -- --dry-run --config small --config other
 ```
 
-Two builder configurations produce 24 comparisons and permit at most 88 model calls.
+Two builder configurations produce 24 comparisons. Builder-request and total-model-call maxima are `null` because no count ceiling applies; usage is reported after execution.
 The plan covers missing evidence, conflicting evidence, prompt injection, and decisive constraints, with both response orders.
-Each builder configuration uses the normal bounded context loop. The direct baseline classifies a fixed factual state without a builder.
+Each builder configuration uses the normal context-window checks and deadline. The direct baseline classifies a fixed factual state without a builder.
 All inputs are synthetic. The benchmark does not inspect the workspace or parent session.
 
 To prepare a live run:

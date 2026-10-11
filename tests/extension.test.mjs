@@ -4,6 +4,7 @@ import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import extension from '../magic8ball.ts';
+import { stateStream } from './helpers/state.mjs';
 // Load the installed session core without the CLI's unrelated startup imports.
 const piEntry = new URL(import.meta.resolve('@earendil-works/pi-coding-agent'));
 const { SessionManager } = await import(new URL('./core/session-manager.js', piEntry));
@@ -32,10 +33,10 @@ test('AC-5 AC-6 AC-13 host-selected Jev and Clef use Pi classifier API, nested h
     const ctx = { cwd: dir, isProjectTrusted: () => true, sessionManager, modelRegistry: {
       find: (p, m) => p === 'cheap' && m === 'small' ? { provider: p, id: m, api: 'test' } : undefined,
       findOfType: (type, p, m) => type === 'classifier' && p === provider && m === id ? { provider: p, id: m } : undefined,
-      streamSimple: (_model, context, options) => ({ result: async () => {
+      streamSimple: stateStream((_model, context, options) => ({ result: async () => {
         requests++; assert.equal(options.maxRetries, 0); assert.ok(options.signal); assert.match(JSON.stringify(context.messages), /CONVERSATION_MARKER/); assert.doesNotMatch(JSON.stringify(context.messages), /probabilities/);
         return { role: 'assistant', content: requests === 1 ? [{ type: 'toolCall', id: 'read1', name: 'magic8ball_read', arguments: { path: 'README.md' } }] : [{ type: 'text', text: JSON.stringify(state) }], stopReason: requests === 1 ? 'toolUse' : 'stop', usage, timestamp: 1, api: 'test', provider: 'cheap', model: 'small' };
-      } }),
+      } })),
       classify: async (model, context, options) => { classifierCalls++; assert.equal(model.id, id); assert.deepEqual(context.state, state); assert.equal(context.questions.decision.type, 'choice'); assert.deepEqual(Object.keys(context.questions.decision.criteria), ['a', 'b', 'insufficient_evidence']); assert.equal(options.maxRetries, 0); return { stopReason: 'stop', usage, answers: { decision: { type: 'choice', choice: 'b', probabilities: { a: .1, b: .8, insufficient_evidence: .1 }, confidence: .55 } } }; }
     }, executeTool: async (name, args, options) => { nestedCalls++; assert.ok(options.signal); const tool = tools.get(name); assert.ok(Compile(tool.parameters).Check(args)); const result = await tool.execute('nested', args, options.signal, undefined, ctx); return { result, isError: Boolean(result.isError), toolCall: { name, arguments: args, id: 'nested' } }; } };
     const r = await main.execute('main', { question: 'Which?', responses: { a: 'A', b: 'B' } }, undefined, undefined, ctx);

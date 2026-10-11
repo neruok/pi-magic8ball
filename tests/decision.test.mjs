@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { validateRequest, parseState, readConfig, decide } from '../lib/decision.ts';
-import { buildState, conversationContext } from '../lib/builder.ts';
+import { conversationContext } from '../lib/builder.ts';
+import { buildFixtureState as buildState } from './helpers/state.mjs';
 
 const input = { question: 'Which approach?', responses: { A: 'Existing extension', B: 'Separate extension' } };
 const state = { goal: 'Add a tool', constraints: ['No writes'], current_state: ['Pi is installed'], evidence: [{ fact: 'Pi supports classifiers', source: 'e1' }], uncertainties: ['No live evaluation'] };
@@ -88,11 +89,12 @@ function message(content, stopReason = 'stop') { return { role: 'assistant', con
 const tools = [{ name: 'magic8ball_read', description: 'read', parameters: { type: 'object' } }];
 function builderDeps(complete, extra = {}) { return { complete, tools, conversation: [{ role: 'user', content: 'CONVERSATION_MARKER' }], executeTool: async () => ({ isError: false, content: [{ type: 'text', text: 'fact' }] }), ...extra }; }
 
-test('AC-2 builder receives neutral instructions and scope-selected tools/context', async () => {
+test('AC-2 AC-31 builder receives neutral instructions and scope-selected tools/context', async () => {
+  const uncited = { ...state, evidence: [] };
   for (const workspace of [false, true]) {
     let n = 0;
-    const b = await buildState(validateRequest({ ...input, context: { workspace, conversation: false } }), builderDeps(async context => { n++; assert.equal(context.tools.length, workspace ? 1 : 0); assert.match(context.systemPrompt, /Do not rank/); assert.doesNotMatch(JSON.stringify(context.messages), /CONVERSATION_MARKER/); return message([{ type: 'text', text: JSON.stringify(state) }]); }), new AbortController().signal, () => {});
-    assert.equal(n, 1); assert.deepEqual(JSON.parse(b.text), state);
+    const b = await buildState(validateRequest({ ...input, context: { workspace, conversation: false } }), builderDeps(async context => { n++; assert.equal(context.tools.length, workspace ? 6 : 5); assert.match(context.systemPrompt, /Do not rank/); assert.doesNotMatch(JSON.stringify(context.messages), /CONVERSATION_MARKER/); return message([{ type: 'text', text: JSON.stringify(uncited) }]); }), new AbortController().signal, () => {});
+    assert.equal(n, 1); assert.deepEqual(JSON.parse(b.text), uncited);
   }
 });
 
@@ -104,12 +106,13 @@ test('AC-3 builder honors nested-tool allowlist and permission failures', async 
   }
 });
 
-test('AC-5 AC-11 builder stops at four requests and eight evidence calls, retaining each usage', async () => {
+test('AC-5 AC-33 builder continues past old count caps and retains each completed request usage', async () => {
   let requests = 0, calls = 0, tokens = 0;
-  const d = builderDeps(async (_c, _s, opts) => { requests++; assert.equal(opts.maxTokens, 2048); assert.equal(opts.maxRetries, 0); return message([{ type: 'toolCall', name: 'magic8ball_read', id: `t${requests}`, arguments: { path: 'README.md' } }], 'toolUse'); }, { executeTool: async () => { calls++; return { isError: false, content: [{ type: 'text', text: 'ok' }] }; } });
-  await assert.rejects(() => buildState(validateRequest(input), d, new AbortController().signal, u => { tokens += u.input; }), e => e.kind === 'budget-exhausted');
-  assert.equal(requests, 4); assert.equal(calls, 3); assert.equal(tokens, 40);
-  requests = 0; calls = 0;
-  d.complete = async () => { requests++; return message(Array.from({ length: 9 }, (_, i) => ({ type: 'toolCall', name: 'magic8ball_read', id: `t${i}`, arguments: { path: 'README.md' } })), 'toolUse'); };
-  await assert.rejects(() => buildState(validateRequest(input), d, new AbortController().signal, () => {}), e => e.kind === 'budget-exhausted'); assert.equal(requests, 1); assert.equal(calls, 8);
+  const d = builderDeps(async (_c, _s, opts) => {
+    requests++; assert.equal(opts.maxTokens, 2048); assert.equal(opts.maxRetries, 0);
+    return requests <= 9 ? message([{ type: 'toolCall', name: 'magic8ball_read', id: `t${requests}`, arguments: { path: 'README.md' } }], 'toolUse') : message([{ type: 'text', text: JSON.stringify(state) }]);
+  }, { executeTool: async () => { calls++; return { isError: false, content: [{ type: 'text', text: 'ok' }] }; } });
+  const built = await buildState(validateRequest(input), d, new AbortController().signal, u => { tokens += u.input; });
+  assert.equal(requests, 10); assert.equal(calls, 9); assert.equal(tokens, 100);
+  assert.deepEqual(JSON.parse(built.text), state);
 });

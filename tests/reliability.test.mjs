@@ -6,7 +6,11 @@ import { join } from 'node:path';
 import { Compile } from 'typebox/compile';
 import { visibleWidth } from '@earendil-works/pi-tui';
 import { streamSimple } from '@earendil-works/pi-ai/api/openai-responses';
+import * as piAi from '@earendil-works/pi-ai';
+// Pi 1.1 provider entry points take normalized transcript context; 1.0 accepts the shorthand.
+const providerContext = context => piAi.normalizeContext ? piAi.normalizeContext(context) : context;
 import extension from '../magic8ball.ts';
+import { stateCalls, stateStream } from './helpers/state.mjs';
 import { decide, parseSettings } from '../lib/decision.ts';
 import { loadSettings, settingsPaths, saveSettingsPatch } from '../lib/settings.ts';
 import { argumentCompletions } from '../lib/completions.ts';
@@ -33,7 +37,7 @@ async function fixture(t, settings = models) {
   const sdkModel = { provider: 'openai', id: 'offline', name: 'Offline fixture', api: 'openai-responses', baseUrl: 'https://offline.invalid/v1', input: ['text'], reasoning: false, contextWindow: 32000, maxTokens: 4096, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
   const ctx = { cwd, hasUI: true, mode: 'tui', isProjectTrusted: () => true, waitForIdle: async () => {}, ui: { notify: (text, level) => notices.push({ text, level }) }, modelRegistry: {
     find: () => sdkModel, findOfType: () => ({ provider: 'typesafe', id: 'offline' }),
-    streamSimple: (_model, context, options) => { calls.push({ role: 'builder', context, options }); return { result: async () => reply() }; },
+    streamSimple: stateStream((_model, context, options) => { calls.push({ role: 'builder', context, options }); return { result: async () => reply() }; }),
     classify: async (_model, context, options) => { calls.push({ role: 'classifier', context, options }); return answer(); }
   } };
   const main = tools.get('magic8ball');
@@ -105,7 +109,7 @@ test('AC-22 complete known usage on success, rejected state/answer, evidence fai
   const f = await fixture(t); const good = f.checked(await f.invoke()); assert.equal(good.usageComplete, true); assert.equal(good.usage.input, 20);
   f.ctx.modelRegistry.streamSimple = () => ({ result: async () => reply({ content: [{ type: 'text', text: 'not JSON' }] }) });
   const invalid = f.checked(await f.invoke({ ...request, diagnostics: true })); assert.equal(invalid.usageComplete, true); assert.equal(invalid.usage.input, 10); assert.equal(invalid.error.diagnostics.phase, 'state-validation');
-  f.ctx.modelRegistry.streamSimple = () => ({ result: async () => reply() }); f.ctx.modelRegistry.classify = async () => answer({ answers: {} });
+  f.ctx.modelRegistry.streamSimple = stateStream(() => ({ result: async () => reply() })); f.ctx.modelRegistry.classify = async () => answer({ answers: {} });
   const invalidAnswer = f.checked(await f.invoke({ ...request, diagnostics: true })); assert.equal(invalidAnswer.usageComplete, true); assert.equal(invalidAnswer.error.diagnostics.phase, 'answer-validation');
   f.ctx.modelRegistry.streamSimple = () => ({ result: async () => reply({ stopReason: 'toolUse', content: [{ type: 'toolCall', id: 'e', name: 'magic8ball_read', arguments: { path: 'file' } }] }) });
   f.ctx.executeTool = async () => { throw new Error(secret); };
@@ -129,7 +133,7 @@ test('AC-22 diagnostics opt-in schema, safe structured hints, status precedence,
 test('AC-22 terminal failure, missing usage, malformed content and preparation diagnostics stay private', async t => {
   const f = await fixture(t);
   for (const stopReason of ['error', 'aborted']) { f.ctx.modelRegistry.streamSimple = () => ({ result: async () => reply({ stopReason, errorMessage: secret }) }); const result = f.checked(await f.invoke({ ...request, diagnostics: true })); assert.equal(result.usageComplete, true); assert.equal(result.error.diagnostics.category, stopReason === 'error' ? 'provider-error' : 'provider-aborted'); }
-  f.ctx.modelRegistry.streamSimple = () => ({ result: async () => reply({ usage: undefined }) }); f.ctx.modelRegistry.classify = async () => answer();
+  f.ctx.modelRegistry.streamSimple = stateStream(() => ({ result: async () => reply({ usage: undefined }) })); f.ctx.modelRegistry.classify = async () => answer();
   const missing = f.checked(await f.invoke()); assert.equal(missing.ok, true); assert.equal(missing.usageComplete, false); assert.equal(missing.usage.input, 10);
   f.ctx.modelRegistry.streamSimple = () => ({ result: async () => reply({ content: [null] }) }); const malformed = f.checked(await f.invoke({ ...request, diagnostics: true })); assert.equal(malformed.error.kind, 'builder-failed'); assert.equal(malformed.error.diagnostics.category, 'extension-error');
   f.ctx.modelRegistry.find = () => { throw new Error(secret); }; const prep = f.checked(await f.invoke({ ...request, diagnostics: true })); assert.equal(prep.error.diagnostics.phase, 'preparation'); assert.equal(prep.error.diagnostics.category, 'local-error'); assert.equal(prep.usageComplete, true);
@@ -166,28 +170,30 @@ test('AC-21 late preparation cannot rearm deadline or change progress', async ()
   pending.resolve(); await sleep(5); assert.equal(blocked, true); assert.equal(builds, 0); assert.equal(updates.length, count); assert.equal(JSON.stringify(result), before);
 });
 
-test('AC-23 fourth-request finalization succeeds through real Responses SSE without tools/tool_choice', async t => {
-  const f = await fixture(t, { ...models, timeoutMs: 1000 }); let attempts = 0, fetches = 0;
+test('AC-23 AC-31 normal stop after state updates succeeds through real Responses SSE with builder-only tools', async t => {
+  const f = await fixture(t, { ...models, timeoutMs: 1000 }); let attempts = 0, fetches = 0, adapterFailure, wireTools, wireHasChoice;
   f.ctx.executeTool = async () => ({ isError: false, result: { content: [{ type: 'text', text: JSON.stringify({ text: 'Fixture', truncated: false }) }] } });
   f.ctx.modelRegistry.streamSimple = (model, context, options) => {
     attempts++; assert.ok(Number.isInteger(options.timeoutMs) && options.timeoutMs > 0); assert.equal(options.maxRetries, 0);
     if (attempts < 4) return { result: async () => reply({ stopReason: 'toolUse', content: [{ type: 'toolCall', id: `e${attempts}`, name: 'magic8ball_read', arguments: { path: 'file' } }] }) };
-    assert.deepEqual(context.tools, []);
-    return streamSimple(model, context, { ...options, apiKey: 'sk-offline-synthetic-not-a-real-key', fetch: async (_url, init) => {
-      fetches++; const body = JSON.parse(init.body); assert.equal(Object.hasOwn(body, 'tools'), false); assert.equal(Object.hasOwn(body, 'tool_choice'), false);
-      const text = JSON.stringify(state), item = { type: 'message', id: 'msg_offline', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text, annotations: [] }] };
+    if (attempts === 4) return { result: async () => reply({ stopReason: 'toolUse', content: stateCalls(state) }) };
+    assert.equal(context.tools.length, 8);
+    const native = streamSimple(model, providerContext(context), { ...options, apiKey: 'sk-offline-synthetic-not-a-real-key', fetch: async (_url, init) => {
+      fetches++; const body = JSON.parse(init.body); wireTools = body.tools?.length; wireHasChoice = Object.hasOwn(body, 'tool_choice');
+      const text = 'Exploration complete.', item = { type: 'message', id: 'msg_offline', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text, annotations: [] }] };
       const events = [{ type: 'response.created', response: { id: 'resp_offline' } }, { type: 'response.output_item.added', output_index: 0, item: { ...item, content: [] } }, { type: 'response.output_text.delta', output_index: 0, content_index: 0, delta: text }, { type: 'response.output_item.done', output_index: 0, item }, { type: 'response.completed', response: { id: 'resp_offline', status: 'completed', output: [item], usage: { input_tokens: 4, output_tokens: 3, total_tokens: 7 } } }];
       return new Response(events.map(event => `data: ${JSON.stringify(event)}\n\n`).join('') + 'data: [DONE]\n\n', { status: 200, headers: { 'content-type': 'text/event-stream' } });
     } });
+    return { result: async () => { const message = await native.result(); adapterFailure = message.errorMessage; return message; } };
   };
-  const result = f.checked(await f.invoke({ ...request, context: { conversation: false, workspace: true } })); assert.equal(result.ok, true); assert.equal(result.usageComplete, true); assert.equal(result.collection.evidenceCalls, 3); assert.equal(attempts, 4); assert.equal(fetches, 1); assert.equal(f.calls.length, 1);
+  const result = f.checked(await f.invoke({ ...request, diagnostics: true, context: { conversation: false, workspace: true } })); assert.equal(result.ok, true, JSON.stringify({ result, adapterFailure, wireTools, wireHasChoice })); assert.equal(wireTools, 8); assert.equal(wireHasChoice, false); assert.equal(result.usageComplete, true); assert.equal(result.collection.evidenceCalls, 3); assert.equal(attempts, 5); assert.equal(fetches, 1); assert.equal(f.calls.length, 1);
 });
 
 test('AC-23 registered request reaches real Responses adapter mock fetch with integer timeout and private HTTP error', async t => {
   const f = await fixture(t, { ...models, timeoutMs: 1000 }); let fetches = 0;
   f.ctx.modelRegistry.streamSimple = (model, context, options) => {
     assert.ok(Number.isInteger(options.timeoutMs) && options.timeoutMs > 0 && options.timeoutMs <= 1000); assert.equal(options.maxRetries, 0);
-    return streamSimple(model, context, { ...options, apiKey: 'sk-offline-synthetic-not-a-real-key', fetch: async (_url, init) => { fetches++; const body = JSON.parse(init.body); assert.equal(Object.hasOwn(body, 'tools'), false); assert.equal(Object.hasOwn(body, 'tool_choice'), false); return new Response(JSON.stringify({ error: { message: secret } }), { status: 401, headers: { 'content-type': 'application/json' } }); } });
+    return streamSimple(model, providerContext(context), { ...options, apiKey: 'sk-offline-synthetic-not-a-real-key', fetch: async (_url, init) => { fetches++; const body = JSON.parse(init.body); assert.equal(body.tools.length, 5); assert.equal(Object.hasOwn(body, 'tool_choice'), false); return new Response(JSON.stringify({ error: { message: secret } }), { status: 401, headers: { 'content-type': 'application/json' } }); } });
   };
   const result = f.checked(await f.invoke({ ...request, diagnostics: true })); assert.equal(result.ok, false); assert.equal(result.error.kind, 'builder-failed'); assert.equal(fetches, 1); assert.equal(f.calls.length, 0); assert.equal(result.usageComplete, true);
 });

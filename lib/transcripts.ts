@@ -1,9 +1,10 @@
 import type { Context, ModelsSimpleStreamOptions } from '@earendil-works/pi-ai';
 import type { ExtensionCommandContext } from '@earendil-works/pi-coding-agent';
 import { getKeybindings, Key, matchesKey, truncateToWidth, wrapTextWithAnsi } from '@earendil-works/pi-tui';
+import { isStateTool, stateArguments } from './state.ts';
 import { LIMITS, object, truncateUtf8, type BuilderReasoning, type EvidenceFailureCode, type ModelSelection } from './decision.ts';
 
-const CAPTURE_BYTES = LIMITS.evidenceCalls * LIMITS.evidenceBytes;
+const CAPTURE_BYTES = LIMITS.transcriptBytes;
 const USAGE = 'Usage: /magic8ball transcripts [on|off|show]. No argument toggles session-only capture.';
 const ARGUMENT_FIELDS = ['path', 'offset', 'limit', 'text', 'byteOffset', 'byteLength'];
 const STOP_REASONS = ['stop', 'toolUse', 'length', 'error', 'aborted'];
@@ -18,7 +19,7 @@ function content(value: unknown): unknown {
   return value.flatMap((block): unknown[] => {
     if (!object(block)) return [];
     if (block.type === 'text' && typeof block.text === 'string') return [{ type: 'text', text: block.text }];
-    if (block.type === 'toolCall') return [{ type: 'toolCall', ...fields(block, ['id', 'name']), arguments: fields(block.arguments, ARGUMENT_FIELDS) }];
+    if (block.type === 'toolCall') return [{ type: 'toolCall', ...fields(block, ['id', 'name']), arguments: typeof block.name === 'string' && isStateTool(block.name) ? stateArguments(block.name, block.arguments) : fields(block.arguments, ARGUMENT_FIELDS) }];
     return []; // Never retain thinking, signatures, images, or unknown provider blocks.
   });
 }
@@ -38,6 +39,7 @@ export interface TranscriptRecorder {
   builderRequest(model: ModelSelection['builder'], context: Context, options?: ModelsSimpleStreamOptions, requestedReasoning?: BuilderReasoning): void;
   builderResponse(value: unknown): void;
   evidenceResult(value: unknown): void;
+  stateResult(value: unknown): void;
   evidenceFailure(name: string, id: string, code: EvidenceFailureCode): void;
   classifierRequest(model: ModelSelection['classifier'], value: unknown): void;
   classifierResponse(value: unknown): void;
@@ -80,6 +82,7 @@ export class TranscriptStore {
       builderRequest: (model, context, options, requestedReasoning = 'default') => append('builder request', () => ({ model: fields(model, ['provider', 'model']), requestedReasoning, options: fields(options, ['reasoning', 'maxTokens', 'maxRetries']), systemPrompt: context.systemPrompt, messages: context.messages.map(value => message(value)).filter(Boolean), tools: context.tools?.map(tool => ({ name: tool.name, description: tool.description, parameters: tool.parameters })) })),
       builderResponse: value => append('builder response', () => message(value, 'assistant')),
       evidenceResult: value => append('evidence result', () => message(value)),
+      stateResult: value => append('state result', () => message(value)),
       evidenceFailure: (name, id, code) => {
         if (!active()) return;
         append('evidence failure', () => ({ toolName: name, toolCallId: id, code }));

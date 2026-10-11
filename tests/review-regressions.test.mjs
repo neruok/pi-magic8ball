@@ -4,7 +4,8 @@ import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { evidence } from '../lib/evidence.ts';
-import { buildState, conversationContext } from '../lib/builder.ts';
+import { conversationContext } from '../lib/builder.ts';
+import { buildFixtureState as buildState } from './helpers/state.mjs';
 import { LIMITS, emptyUsage, validateRequest } from '../lib/decision.ts';
 
 async function workspace(t) {

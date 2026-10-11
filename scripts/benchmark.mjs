@@ -10,7 +10,7 @@ async function main() {
   if (values['dry-run']) {
     // Do not even import the adapter: imports can load credentials or have side effects.
     const plan = benchmarkPlan(values.config ?? ['example']);
-    report = { dryRun: true, plan, maxModelCalls: plan.reduce((n, row) => n + row.maxBuilderRequests + row.maxClassifierRequests, 0) };
+    report = { dryRun: true, plan, maxModelCalls: plan.some(row => row.maxBuilderRequests === null) ? null : plan.reduce((n, row) => n + row.maxBuilderRequests + row.maxClassifierRequests, 0) };
   } else {
     if (!values['allow-spend'] || !values.adapter) throw new Error('Live benchmark requires --allow-spend and --adapter. Use --dry-run to inspect the plan first.');
     const controller = new AbortController();

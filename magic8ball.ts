@@ -2,7 +2,7 @@ import { Type } from 'typebox';
 import type { Api, ClassifierApi, ClassifierModel, JsonValue, Model, Tool } from '@earendil-works/pi-ai';
 import { getAgentDir, type ExtensionAPI, type ExtensionToolContext } from '@earendil-works/pi-coding-agent';
 import { buildState } from './lib/builder.ts';
-import { decide, DecisionError, EVIDENCE_FAILURE_CODES, LIMITS, REASONING_LEVELS, isEvidenceFailureCode, readConfig, type BuilderReasoning, type DecisionDependencies } from './lib/decision.ts';
+import { decide, DecisionError, EVIDENCE_FAILURE_CODES, LIMITS, REASONING_LEVELS, checkContextWindow, isEvidenceFailureCode, readConfig, type BuilderReasoning, type DecisionDependencies } from './lib/decision.ts';
 import { renderDecision, renderQuestion } from './lib/render.ts';
 import { evidence } from './lib/evidence.ts';
 import { loadSettings, settingsPaths } from './lib/settings.ts';
@@ -61,7 +61,9 @@ function dependencies(ctx: ExtensionToolContext, transcript?: TranscriptRecorder
         tools: EVIDENCE_TOOLS.map(({ name, description, parameters }) => ({ name, description, parameters })) as Tool[],
         conversation: request.context.conversation ? ctx.sessionManager.buildSessionProjection().messages : [],
         reasoning,
+        contextWindow: selected.contextWindow,
         execution,
+        recordState: message => transcript?.stateResult(message),
         recordEvidence: message => transcript?.evidenceResult(message),
         recordFailure: (name, id, code) => transcript?.evidenceFailure(name, id, code),
         complete: async (context, _signal, options) => {
@@ -79,6 +81,7 @@ function dependencies(ctx: ExtensionToolContext, transcript?: TranscriptRecorder
     async classify(request, state, signal, execution) {
       if (!classifier) throw new DecisionError('model-unavailable');
       const context = { state, questions: { decision: { type: 'choice' as const, instructions: request.question, criteria: request.responses } } };
+      checkContextWindow(context, classifier.contextWindow);
       transcript?.classifierRequest({ provider: classifier.provider, model: classifier.id }, context);
       const selected = classifier;
       const result = await ctx.modelRegistry.classify(selected, context, { signal, timeoutMs: execution.remaining(), maxRetries: 0 });
@@ -112,7 +115,7 @@ export default function magic8ball(pi: ExtensionAPI): void {
   }
   pi.registerTool({
     name: 'magic8ball', label: 'Magic 8-ball', exposure: 'model-only',
-    description: 'Ask an advisory choice question with mandatory descriptions for each response. A separate context builder gathers neutral state, then Jev or Clef returns a distribution. Results are advisory evidence, never authorization or an execution command. Confidence measures distribution concentration, not probability of correctness. You remain responsible for the final action. Context defaults to conversation and workspace; context.supplied adds bounded caller evidence for the builder. No shell, git execution, web, writes, or hidden model fallback. Uses host-configured models and may incur provider charges.',
+    description: 'Ask an advisory choice question with mandatory descriptions for each response. A separate context builder gathers neutral state, then Jev or Clef returns a distribution. Results are advisory evidence, never authorization or an execution command. Confidence measures distribution concentration, not probability of correctness. You remain responsible for the final action. Context defaults to conversation and workspace; context.supplied adds bounded caller evidence for the builder. No shell, git execution, web, filesystem writes, or hidden model fallback. Uses host-configured models and may incur provider charges.',
     promptSnippet: 'Get independent judgment when multiple reasonable approaches remain.',
     promptGuidelines: [
       'Use magic8ball when multiple plausible approaches, explanations, or fixes remain after examining available evidence and the choice could materially affect the work.',

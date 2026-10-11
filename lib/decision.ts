@@ -2,7 +2,7 @@ import type { ModelThinkingLevel, Usage } from '@earendil-works/pi-ai';
 import { permittedFilePath } from './paths.ts';
 import { Execution, type FailureDiagnostics } from './execution.ts';
 
-export const LIMITS = Object.freeze({ requestBytes: 16000, suppliedEntries: 8, suppliedEntryBytes: 8192, suppliedBytes: 32768, stateBytes: 12000, conversationBytes: 24000, evidenceBytes: 16000, builderRequests: 4, evidenceCalls: 8, outputTokens: 2048, timeoutMs: 120000 });
+export const LIMITS = Object.freeze({ requestBytes: 16000, suppliedEntries: 8, suppliedEntryBytes: 8192, suppliedBytes: 32768, stateBytes: 12000, conversationBytes: 24000, evidenceBytes: 16000, fileHints: 8, transcriptBytes: 128000, outputTokens: 2048, timeoutMs: 120000 });
 export const ABSTENTION = 'insufficient_evidence';
 export const REASONING_LEVELS = ['default', 'off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
 export type BuilderReasoning = 'default' | ModelThinkingLevel;
@@ -22,7 +22,7 @@ const MESSAGES: Record<ErrorKind, string> = {
   'builder-failed': 'The context builder failed. No classification was attempted.',
   'classifier-failed': 'The classifier failed. No decision is available.',
   'evidence-failed': 'An evidence call failed or was denied. No classification was attempted.',
-  'budget-exhausted': 'The context builder exhausted its request or evidence-call limit.',
+  'budget-exhausted': 'The model request exceeds its available context window estimate.',
   cancelled: 'The decision was cancelled.', timeout: 'The decision exceeded its deadline.'
 };
 export class DecisionError extends Error {
@@ -100,7 +100,7 @@ export function validateRequest(input: unknown): DecisionRequest {
     }
     if (Object.hasOwn(input.context, 'files')) {
       const files = input.context.files;
-      if (!Array.isArray(files) || files.length > LIMITS.evidenceCalls || !files.every(permittedFilePath) || new Set(files).size !== files.length || (!context.workspace && files.length > 0)) return bad();
+      if (!Array.isArray(files) || files.length > LIMITS.fileHints || !files.every(permittedFilePath) || new Set(files).size !== files.length || (!context.workspace && files.length > 0)) return bad();
       context.files = [...files];
     }
     if (Object.hasOwn(input.context, 'supplied')) context.supplied = validateSupplied(input.context.supplied);
@@ -122,6 +122,16 @@ export function parseState(text: string, sourceIds?: readonly string[]): Decisio
   if (!Array.isArray(state.evidence) || !state.evidence.every(e => object(e) && exactKeys(e, ['fact', 'source']) && nonempty(e.fact) && nonempty(e.source))) return bad();
   if (sourceIds && state.evidence.some(e => !sourceIds.includes(e.source))) return bad();
   return state as DecisionState;
+}
+
+// This is a preflight estimate of the complete logical payload, not exact provider tokenization.
+export function checkContextWindow(value: unknown, contextWindow?: number, outputReserve = 0): void {
+  if (contextWindow === undefined) return;
+  // Use Pi 1.1's 3.5-character heuristic consistently (Pi 1.0 used four).
+  // Inline it because the extension loader aliases the pi-ai root to a file,
+  // which breaks imports of utils/estimate when no adjacent dependencies exist.
+  const estimatedTokens = Math.ceil(JSON.stringify(value).length / 3.5);
+  if (!Number.isFinite(contextWindow) || contextWindow <= 0 || estimatedTokens + outputReserve > contextWindow) throw new DecisionError('budget-exhausted');
 }
 
 export type DecisionSettings = Partial<ModelSelection> & { timeoutMs?: number };

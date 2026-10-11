@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { Compile } from 'typebox/compile';
 import extension from '../magic8ball.ts';
-import { buildState } from '../lib/builder.ts';
+import { buildFixtureState as buildState, stateStream } from './helpers/state.mjs';
 import { decide, validateRequest, parseState } from '../lib/decision.ts';
 
 const piEntry = new URL(import.meta.resolve('@earendil-works/pi-coding-agent'));
@@ -108,7 +108,8 @@ test('AC-28 AC-29 preserved omitted input keeps the original cap, scope/hint che
     tools: [], conversation: [{ role: 'user', content: 'HIDDEN_HISTORY' }],
     complete: async context => {
       assert.deepEqual(ids(context), []);
-      assert.deepEqual(context.tools, []);
+      assert.equal(context.tools.length, 5);
+      assert.ok(context.tools.every(tool => tool.name.startsWith('magic8ball_set_')));
       assert.doesNotMatch(JSON.stringify(context.messages), /HIDDEN_HISTORY/);
       return final({ ...state, evidence: [] });
     }, executeTool: async () => assert.fail('no tools')
@@ -137,7 +138,8 @@ test('AC-29 builder separates supplied content and claims from scopes, keeping s
     tools: [{ name: 'magic8ball_read', description: 'read', parameters: { type: 'object' } }],
     conversation: [{ role: 'user', content: 'HIDDEN_HISTORY' }],
     complete: async context => {
-      assert.deepEqual(context.tools, []);
+      assert.equal(context.tools.length, 5);
+      assert.ok(context.tools.every(tool => tool.name.startsWith('magic8ball_set_')));
       assert.deepEqual(ids(context), ['supplied1', 'supplied2']);
       const data = JSON.parse(context.messages[0].content);
       assert.deepEqual(data.permitted_scopes, input.context);
@@ -159,7 +161,7 @@ test('AC-29 builder separates supplied content and claims from scopes, keeping s
   assert.deepEqual(built.collection.sources, []);
 });
 
-test('AC-29 supplied namespaces coexist with conversation and eight workspace calls without duplicate content or budget changes', async () => {
+test('AC-29 AC-33 supplied namespaces coexist with conversation beyond eight workspace calls', async () => {
   let turns = 0, calls = 0;
   const built = await buildState(validateRequest({ ...input, context: { conversation: true, workspace: true, files: ['fixture.txt'], supplied } }), {
     tools: [{ name: 'magic8ball_read', description: 'read', parameters: { type: 'object' } }], conversation: [{ role: 'user', content: 'Conversation fact' }],
@@ -170,19 +172,19 @@ test('AC-29 supplied namespaces coexist with conversation and eight workspace ca
       assert.deepEqual(data.permitted_scopes, { conversation: true, workspace: true });
       assert.deepEqual(data.file_hints, ['fixture.txt']);
       if (!turns++) {
-        assert.equal(context.tools.length, 1);
-        return reply(Array.from({ length: 8 }, (_, i) => ({ type: 'toolCall', id: `read${i}`, name: 'magic8ball_read', arguments: { path: 'fixture.txt' } })), 'toolUse');
+        assert.equal(context.tools.length, 6);
+        return reply(Array.from({ length: 9 }, (_, i) => ({ type: 'toolCall', id: `read${i}`, name: 'magic8ball_read', arguments: { path: 'fixture.txt' } })), 'toolUse');
       }
-      assert.deepEqual(context.tools, []);
-      assert.match(context.systemPrompt, /"evidenceCallsRemaining":0,"finalize":true/);
-      return final({ ...state, evidence: [...state.evidence, { fact: 'Workspace observation', source: 'e8' }] });
+      assert.equal(context.tools.length, 6);
+      assert.doesNotMatch(context.systemPrompt, /finalize|evidenceCallsRemaining/);
+      return final({ ...state, evidence: [...state.evidence, { fact: 'Workspace observation', source: 'e9' }] });
     }, executeTool: async () => { calls++; return { content: [{ type: 'text', text: 'Workspace fact' }] }; }
   }, new AbortController().signal, () => {});
-  assert.equal(calls, 8);
+  assert.equal(calls, 9);
   assert.equal(turns, 2);
-  assert.equal(built.collection.evidenceCalls, 8);
-  assert.equal(built.collection.evidence.length, 11);
-  assert.equal(parseState(built.text, built.collection.evidence.map(e => e.id)).evidence[1].source, 'e8');
+  assert.equal(built.collection.evidenceCalls, 9);
+  assert.equal(built.collection.evidence.length, 12);
+  assert.equal(parseState(built.text, built.collection.evidence.map(e => e.id)).evidence[1].source, 'e9');
 });
 
 test('AC-29 exact supplied citations reject labels, unavailable IDs, and disabled scopes before classification', async () => {
@@ -213,7 +215,7 @@ test('AC-29 registered tool forwards only validated state to classification and 
   const classifierInputs = [];
   const ctx = { cwd: dir, isProjectTrusted: () => false, sessionManager: { buildSessionProjection: () => assert.fail('conversation disabled') }, executeTool: async () => assert.fail('workspace disabled'), modelRegistry: {
     find: (provider, id) => ({ provider, id, api: 'test' }), findOfType: (_type, provider, id) => ({ provider, id }),
-    streamSimple: (_model, context) => ({ result: async () => { assert.deepEqual(ids(context), ['supplied1', 'supplied2']); return final(state); } }),
+    streamSimple: stateStream((_model, context) => ({ result: async () => { assert.deepEqual(ids(context), ['supplied1', 'supplied2']); return final(state); } })),
     classify: async (_model, context) => { classifierInputs.push(context); return answer; }
   } };
   const result = await main.execute('supplied', withSupplied(supplied), undefined, undefined, ctx);
@@ -225,7 +227,7 @@ test('AC-29 registered tool forwards only validated state to classification and 
   assert.equal(result.usage.input, 2);
   assert.equal(result.structuredContent.usageComplete, true);
   // Same mock state with no raw supplemental payload yields the same classifier boundary.
-  ctx.modelRegistry.streamSimple = () => ({ result: async () => final({ ...state, evidence: [] }) });
+  ctx.modelRegistry.streamSimple = stateStream(() => ({ result: async () => final({ ...state, evidence: [] }) }));
   const plain = await main.execute('plain', input, undefined, undefined, ctx);
   assert.equal(plain.isError, false);
   assert.deepEqual(classifierInputs[1], { ...classifierInputs[0], state: { ...state, evidence: [] } });

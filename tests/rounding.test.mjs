@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { Compile } from 'typebox/compile';
 import extension from '../magic8ball.ts';
 import { decide } from '../lib/decision.ts';
+import { stateStream } from './helpers/state.mjs';
 
 const state = { goal: 'Inspect the declared verification script.', constraints: [], current_state: ['verify runs typecheck and check'], evidence: [], uncertainties: [] };
 const usage = { input: 10, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 11, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: .001 } };
@@ -42,7 +43,7 @@ test('AC-24 accepts the live Clef rounded reply through the registered tool with
   const ctx = { cwd: root, isProjectTrusted: () => false, modelRegistry: {
     find: () => ({ provider: 'offline', id: 'offline', api: 'openai-responses', reasoning: false }),
     findOfType: () => ({ provider: 'openrouter', id: 'cloudflare/clef-flash' }),
-    streamSimple: (_m, _c, options) => { builders++; assert.equal(options.maxRetries, 0); return { result: async () => ({ role: 'assistant', content: [{ type: 'text', text: JSON.stringify(state) }], stopReason: 'stop', usage }) }; },
+    streamSimple: stateStream((_m, _c, options) => { builders++; assert.equal(options.maxRetries, 0); return { result: async () => ({ role: 'assistant', content: [{ type: 'text', text: JSON.stringify(state) }], stopReason: 'stop', usage }) }; }),
     classify: async (_m, context, options) => { classifiers++; assert.equal(options.maxRetries, 0); assert.deepEqual(Object.keys(context.questions.decision.criteria), Object.keys(live.probabilities)); return raw(live); }
   } };
   const main = tools.get('magic8ball');

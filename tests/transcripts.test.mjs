@@ -8,6 +8,7 @@ import { Compile } from 'typebox/compile';
 import extension from '../magic8ball.ts';
 import { TranscriptStore, createTranscriptViewer } from '../lib/transcripts.ts';
 import { decide } from '../lib/decision.ts';
+import { stateStream } from './helpers/state.mjs';
 
 const models = { builder: { provider: 'test', model: 'builder' }, classifier: { provider: 'test', model: 'classifier' } };
 const state = { goal: 'Choose', constraints: [], current_state: [], evidence: [{ fact: 'Observed', source: 'e1' }], uncertainties: [] };
@@ -28,9 +29,9 @@ async function fixture(t) {
     ui: { notify: (text, level) => notices.push({ text, level }), custom: async factory => { let closed = false; const component = factory({ terminal: { rows: 8 }, requestRender() {} }, {}, {}, () => { closed = true; }); rendered.push(component.render(80).join('\n')); component.handleInput('\x1b'); assert.equal(closed, true); } },
     sessionManager: { buildSessionProjection: () => ({ messages: [{ role: 'user', content: 'CONVERSATION_VISIBLE' }] }) },
     modelRegistry: { find: () => ({ provider: 'test', id: 'builder', api: 'test' }), findOfType: () => ({ provider: 'test', id: 'classifier' }),
-      streamSimple: (_model, context) => ({ result: async () => { requests.push(context); turn++;
+      streamSimple: stateStream((_model, context) => ({ result: async () => { requests.push(context); turn++;
         return { content: turn % 2 ? [{ type: 'thinking', thinking: 'HIDDEN_REASONING_SECRET', signature: 'SIGNATURE_SECRET' }, { type: 'text', text: 'BUILDER_VISIBLE' }, { type: 'toolCall', id: 'read', name: 'magic8ball_read', arguments: { path: 'README.md' } }] : [{ type: 'text', text: JSON.stringify(state) }], stopReason: turn % 2 ? 'toolUse' : 'stop', usage, headers: { Authorization: 'AUTH_HEADER_SECRET' } };
-      } }), classify: async () => raw },
+      } })), classify: async () => raw },
     executeTool: async () => ({ isError: false, result: { content: [{ type: 'text', text: JSON.stringify({ text: 'EVIDENCE_VISIBLE', truncated: false, range: { start: 0, end: 10, totalBytes: 10 } }) }], details: { secret: 'DETAILS_SECRET' } } }),
   };
   const command = args => commands.get('magic8ball').handler(args, ctx);

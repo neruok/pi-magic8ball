@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildState } from '../lib/builder.ts';
+import { buildFixtureState as buildState } from './helpers/state.mjs';
 import { decide, parseState, validateRequest } from '../lib/decision.ts';
 
 const input = { question: 'The fixture timeout is 300000 ms and default is 120000 ms. Which is longer?', responses: { fixture: 'Fixture is longer.', default: 'Default is longer.' }, context: { conversation: false, workspace: false } };

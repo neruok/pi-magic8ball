@@ -101,7 +101,9 @@ test('AC-25 packed release includes its license, loads without adjacent dependen
     const plan = JSON.parse(dry.stdout);
     assert.equal(plan.dryRun, true);
     assert.equal(plan.plan.length, 24);
-    assert.equal(plan.maxModelCalls, 88);
+    assert.equal(plan.maxModelCalls, null);
+    assert.ok(plan.plan.filter(row => row.mode === 'builder').every(row => row.maxBuilderRequests === null));
+    assert.ok(plan.plan.filter(row => row.mode === 'direct').every(row => row.maxBuilderRequests === 0));
   } finally {
     await rm(scratch, { recursive: true, force: true });
   }

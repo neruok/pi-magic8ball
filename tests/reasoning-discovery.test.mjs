@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Compile } from 'typebox/compile';
 import extension from '../magic8ball.ts';
+import { stateStream } from './helpers/state.mjs';
 import { parseSettings } from '../lib/decision.ts';
 import { BUILDER_PROMPT } from '../lib/builder.ts';
 import { evidence } from '../lib/evidence.ts';
@@ -34,7 +35,7 @@ async function fixture(t) {
   const ctx = { cwd, hasUI: true, mode: 'rpc', isProjectTrusted: () => true, waitForIdle: async () => {},
     ui: { notify: (text, level) => notices.push({ text, level }) }, sessionManager: { buildSessionProjection: () => ({ messages: [] }) },
     modelRegistry: { find: () => chat, findOfType: () => ({ provider: 'test', id: 'classifier' }),
-      streamSimple: (_model, context, options) => { builderCalls.push({ context, options }); return { result: async () => plans.shift() ?? final(state) }; },
+      streamSimple: stateStream((_model, context, options) => { builderCalls.push({ context, options }); return { result: async () => plans.shift() ?? final(state) }; }),
       classify: async (_model, context, options) => { classifierCalls.push({ context, options }); return { stopReason: 'stop', usage, answers: { decision: { type: 'choice', choice: 'A', probabilities: { A: .8, B: .1, insufficient_evidence: .1 }, confidence: .4 } } }; } },
     executeTool: async (name, args, { signal }) => { const result = await tools.get(name).execute('nested', args, signal, undefined, ctx); return { result, isError: result.isError ?? false }; },
   };
@@ -133,14 +134,16 @@ test('AC-19 reproduces batched directory guess and permits bounded evidence-base
   await f.command('transcripts show'); assert.match(f.notices.at(-1).text, /path-not-found/);
 });
 
-test('AC-19 missing observations retain the eight-call ceiling and tool-free finalization', async t => {
+test('AC-19 AC-33 missing observations continue beyond eight calls with state tools available', async t => {
   const f = await fixture(t); f.plans.push(message(Array.from({ length: 8 }, (_, i) => call(`missing-${i}`, `absent-${i}`))), final({ ...state, uncertainties: ['All eight inspected paths were absent.'] }));
   const result = await f.invoke({ ...input, context: { workspace: true, conversation: false } }); assert.equal(result.isError, false);
   assert.equal(result.structuredContent.collection.evidenceCalls, 8); assert.ok(result.structuredContent.collection.evidence.every(e => e.code === 'path-not-found'));
-  assert.deepEqual(f.builderCalls[1].context.tools, []);
+  assert.equal(f.builderCalls[1].context.tools.length, 8);
   const classified = f.classifierCalls.length;
-  f.plans.push(message(Array.from({ length: 9 }, (_, i) => call(`excess-${i}`, `absent-${i}`))));
-  const overflow = await f.invoke({ ...input, context: { workspace: true, conversation: false } }); assert.equal(overflow.structuredContent.error.kind, 'budget-exhausted'); assert.equal(f.classifierCalls.length, classified);
+  f.plans.push(message(Array.from({ length: 9 }, (_, i) => call(`next-${i}`, `absent-${i}`))), final(state));
+  const continued = await f.invoke({ ...input, context: { workspace: true, conversation: false } });
+  assert.equal(continued.structuredContent.ok, true); assert.equal(continued.structuredContent.collection.evidenceCalls, 9);
+  assert.equal(f.classifierCalls.length, classified + 1);
 });
 
 test('AC-19 hook errors cannot masquerade as recoverable absence or leak raw text', async t => {
