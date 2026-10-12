@@ -25,7 +25,7 @@ Live provider and terminal compatibility are not established by these checks. Ru
 After npm publication, install the pinned release:
 
 ```bash
-pi install npm:@neruok/pi-magic8ball@0.1.2
+pi install npm:@neruok/pi-magic8ball@0.2.1
 ```
 
 Or install from the repository:
@@ -46,7 +46,7 @@ pi -e /absolute/path/to/pi-magic8ball/magic8ball.ts
 
 The local invocation does not change package settings. Pi supplies the host packages listed in `package.json`.
 
-The release candidate is `@neruok/pi-magic8ball@0.1.2`, licensed under [MIT](LICENSE).
+The release package is `@neruok/pi-magic8ball@0.2.1`, licensed under [MIT](LICENSE).
 Release preparation does not publish the package. Registry ownership and publication credentials still require verification.
 
 ## Configure models
@@ -467,7 +467,7 @@ Do not edit the generated contract directly.
 
 ### Before npm publication
 
-The selected release is `@neruok/pi-magic8ball@0.1.2` under MIT. The manifest sets public access for the scoped package.
+The selected release is `@neruok/pi-magic8ball@0.2.1` under MIT. The manifest sets public access for the scoped package.
 
 1. Confirm the manifest and lockfile identify the intended release.
 2. Run `npm ci --ignore-scripts` and `npm run verify` in a clean checkout.

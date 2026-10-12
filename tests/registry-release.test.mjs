@@ -4,6 +4,14 @@ import { readFile } from 'node:fs/promises';
 
 const manifest = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
 
+test('COMMON-AC-1 README release and installation examples identify this version', async () => {
+  const readme = await readFile(new URL('../README.md', import.meta.url), 'utf8');
+  const references = [...readme.matchAll(/@neruok\/pi-[a-z0-9-]+@(\d+\.\d+\.\d+)/g)]
+    .filter(match => match[0].startsWith(manifest.name + '@'));
+  assert.ok(references.length > 0);
+  for (const reference of references) assert.equal(reference[1], manifest.version, reference[0]);
+});
+
 test('COMMON-AC-1 release pins the verified common registry artifact without a source link', async () => {
   assert.deepEqual(manifest.dependencies, { '@neruok/pi-common': '0.1.0' });
   const lock = JSON.parse(await readFile(new URL('../package-lock.json', import.meta.url), 'utf8'));
