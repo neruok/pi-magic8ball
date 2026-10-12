@@ -1,9 +1,7 @@
-import { getSupportedThinkingLevels, type Api, type Model } from '@earendil-works/pi-ai';
+import type { Api, Model } from '@earendil-works/pi-ai';
+import { supportedReasoning, supportsReasoning } from '@neruok/pi-common/models';
 import { DecisionError, type BuilderReasoning } from './decision.ts';
-
-export function supportedReasoning(model: Model<Api>): BuilderReasoning[] {
-  return ['default', ...getSupportedThinkingLevels(model)];
-}
+export { supportedReasoning };
 export function assertReasoning(model: Model<Api>, level?: BuilderReasoning): void {
-  if (level !== undefined && !supportedReasoning(model).includes(level)) throw new DecisionError('unsupported-reasoning');
+  if (!supportsReasoning(model, level)) throw new DecisionError('unsupported-reasoning');
 }

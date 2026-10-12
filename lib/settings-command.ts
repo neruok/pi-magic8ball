@@ -6,13 +6,14 @@ import { assertReasoning, supportedReasoning } from './reasoning.ts';
 import { transcriptCommand, type TranscriptStore } from './transcripts.ts';
 import { loadSettings, saveSettingsPatch, settingsPaths, type LoadedSettings, type Role, type Settings, type Scope, type SettingsPaths } from './settings.ts';
 
+import { scopedArguments, completionContext } from '@neruok/pi-common/commands';
+import { reportCommand } from '@neruok/pi-common/presentation';
+
 const USAGE = 'Usage: /magic8ball [--global|--project] [show | builder <provider> <model> | classifier <provider> <model> | reasoning [level] | timeout [milliseconds|default]]. No subcommand opens the two-model picker. Saves default to global (user) settings. Session-only capture: /magic8ball transcripts [on|off|show].';
 function parseCommand(args: string): { scope: Scope; role?: Role; pair?: ModelSelection[Role]; show: boolean; reasoning?: BuilderReasoning; reasoningQuery?: boolean; timeoutQuery?: boolean; timeoutMs?: number; resetTimeout?: boolean } {
-  const tokens = args.trim() ? args.trim().split(/\s+/) : [];
-  const flags = tokens.filter(t => t.startsWith('--'));
-  if (flags.length > 1 || flags.some(f => f !== '--global' && f !== '--project')) throw new Error(USAGE);
-  const scope: Scope = flags[0] === '--project' ? 'project' : 'global';
-  const rest = tokens.filter(t => !t.startsWith('--'));
+  const parsed = scopedArguments(args);
+  if (!parsed) throw new Error(USAGE);
+  const { scope, args: rest } = parsed;
   if (!rest.length) return { scope, show: false };
   if (rest[0] === 'show' && rest.length === 1) return { scope, show: true };
   if (rest[0] === 'timeout') {
@@ -64,14 +65,12 @@ async function pick(ctx: ExtensionCommandContext, role: Role, scope: Scope, curr
 }
 
 export function registerSettingsCommand(pi: ExtensionAPI, transcripts: TranscriptStore): (ctx?: CompletionContext) => void {
-  let context: CompletionContext | undefined;
-  let contextRevision = 0;
+  const completion = completionContext<CompletionContext>(argumentCompletions);
+  const report = (ctx: ExtensionCommandContext, text: string, level: 'info' | 'error') => reportCommand(pi, ctx, 'magic8ball-settings', text, level);
   pi.registerCommand('magic8ball', {
     description: 'Configure advisory decision models; picker, show, builder/classifier, --global/--project; reasoning [level]; timeout [milliseconds|default]; transcripts [on|off|show]',
     async getArgumentCompletions(prefix) {
-      const revision = contextRevision;
-      const items = await argumentCompletions(prefix, context);
-      return revision === contextRevision ? items : null;
+      return completion.complete(prefix);
     },
     async handler(args, ctx) {
       if (args.trim().split(/\s+/)[0] === 'transcripts') {
@@ -83,10 +82,10 @@ export function registerSettingsCommand(pi: ExtensionAPI, transcripts: Transcrip
       try {
         let command: ReturnType<typeof parseCommand>;
         try { command = parseCommand(args); }
-        catch (error) { ctx.ui.notify(error instanceof DecisionError ? error.message : USAGE, 'error'); return; }
+        catch (error) { report(ctx, error instanceof DecisionError ? error.message : USAGE, 'error'); return; }
         const loaded = await loadSettings(paths, ctx.isProjectTrusted());
         if (command.timeoutQuery) {
-          ctx.ui.notify(`${describe(loaded, paths, ctx.isProjectTrusted())}\nUse timeout <milliseconds> or timeout default. Longer deadlines are not a billing guarantee.`, 'info');
+          report(ctx, `${describe(loaded, paths, ctx.isProjectTrusted())}\nUse timeout <milliseconds> or timeout default. Longer deadlines are not a billing guarantee.`, 'info');
           return;
         }
         if (command.reasoningQuery) {
@@ -94,15 +93,15 @@ export function registerSettingsCommand(pi: ExtensionAPI, transcripts: Transcrip
           if (!pair) throw new DecisionError('not-configured');
           const model = ctx.modelRegistry.find(pair.provider, pair.model);
           if (!model || model.api === 'pi-virtual') throw new DecisionError('model-unavailable');
-          ctx.ui.notify(`${describe(loaded, paths, ctx.isProjectTrusted())}\nSupported builder reasoning: ${supportedReasoning(model).join(', ')}.\nUse /magic8ball [--global|--project] reasoning <level>. Higher reasoning can increase cost and latency.`, 'info');
+          report(ctx, `${describe(loaded, paths, ctx.isProjectTrusted())}\nSupported builder reasoning: ${supportedReasoning(model).join(', ')}.\nUse /magic8ball [--global|--project] reasoning <level>. Higher reasoning can increase cost and latency.`, 'info');
           return;
         }
         if (command.show || (!command.role && command.timeoutMs === undefined && !command.resetTimeout && !ctx.hasUI)) {
-          ctx.ui.notify(describe(loaded, paths, ctx.isProjectTrusted()) + '\n' + USAGE, 'info');
+          report(ctx, describe(loaded, paths, ctx.isProjectTrusted()) + '\n' + USAGE, 'info');
           return;
         }
         if (command.scope === 'project' && !ctx.isProjectTrusted()) {
-          ctx.ui.notify('Project settings require Pi project trust. Use --global or trust this project through Pi.', 'error');
+          report(ctx, 'Project settings require Pi project trust. Use --global or trust this project through Pi.', 'error');
           return;
         }
         await ctx.waitForIdle();
@@ -119,23 +118,23 @@ export function registerSettingsCommand(pi: ExtensionAPI, transcripts: Transcrip
           resolve(ctx, command.role, command.pair);
           patch[command.role] = command.pair;
         } else {
-          ctx.ui.notify(describe(loaded, paths, ctx.isProjectTrusted()), 'info');
+          report(ctx, describe(loaded, paths, ctx.isProjectTrusted()), 'info');
           for (const role of ['builder', 'classifier'] as const) {
             const pair = await pick(ctx, role, command.scope, loaded.settings[role]);
-            if (!pair) { ctx.ui.notify('Configuration cancelled; settings unchanged.', 'info'); return; }
+            if (!pair) { report(ctx, 'Configuration cancelled; settings unchanged.', 'info'); return; }
             patch[role] = pair;
           }
         }
         saveStarted = true;
         await saveSettingsPatch(paths, command.scope, patch, ctx.isProjectTrusted(), command.resetTimeout);
         const effective = await loadSettings(paths, ctx.isProjectTrusted());
-        ctx.ui.notify(`Saved ${command.scope} settings at ${paths[command.scope]}.\n${describe(effective, paths, ctx.isProjectTrusted())}`, 'info');
+        report(ctx, `Saved ${command.scope} settings at ${paths[command.scope]}.\n${describe(effective, paths, ctx.isProjectTrusted())}`, 'info');
       } catch (error) {
         const message = error instanceof DecisionError ? error.message : 'Cannot update magic8ball settings.';
         const outcome = saveStarted ? 'A save may have completed; inspect before retrying.' : 'This command did not save settings.';
-        ctx.ui.notify(`${message}\nglobal: ${paths.global}\nproject: ${paths.project}\n${outcome} Use /magic8ball show to inspect effective settings.`, 'error');
+        report(ctx, `${message}\nglobal: ${paths.global}\nproject: ${paths.project}\n${outcome} Use /magic8ball show to inspect effective settings.`, 'error');
       }
     }
   });
-  return ctx => { context = ctx; contextRevision++; };
+  return ctx => completion.set(ctx);
 }

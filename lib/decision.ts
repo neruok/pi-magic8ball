@@ -4,7 +4,8 @@ import { Execution, type FailureDiagnostics } from './execution.ts';
 
 export const LIMITS = Object.freeze({ requestBytes: 16000, suppliedEntries: 8, suppliedEntryBytes: 8192, suppliedBytes: 32768, stateBytes: 12000, conversationBytes: 24000, evidenceBytes: 16000, fileHints: 8, transcriptBytes: 128000, outputTokens: 2048, timeoutMs: 120000 });
 export const ABSTENTION = 'insufficient_evidence';
-export const REASONING_LEVELS = ['default', 'off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
+import { REASONING_LEVELS } from '@neruok/pi-common/model-types';
+export { REASONING_LEVELS };
 export type BuilderReasoning = 'default' | ModelThinkingLevel;
 export const EVIDENCE_FAILURE_CODES = ['invalid-arguments', 'path-denied', 'wrong-type', 'invalid-text', 'permission-denied', 'io-failed', 'tool-denied-or-failed'] as const;
 export type EvidenceFailureCode = typeof EVIDENCE_FAILURE_CODES[number];

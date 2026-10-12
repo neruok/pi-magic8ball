@@ -1,9 +1,7 @@
 import { truncateToWidth, wrapTextWithAnsi, type Component } from '@earendil-works/pi-tui';
 import { object, type DecisionResult } from './decision.ts';
 
-function safe(value: unknown): string {
-  return String(value ?? '').replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ');
-}
+import { sanitizeLabel as safe } from '@neruok/pi-common/presentation';
 
 function usageLine(details: Record<string, unknown>): string {
   const usage = object(details.usage) ? details.usage : {};

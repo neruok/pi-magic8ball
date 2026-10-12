@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdtemp, readFile, rm, access } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, access, mkdir, lstat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -50,7 +50,7 @@ test('AC-25 package checks have a focused command and run in verification/CI', a
   assert.match(ci, /npm run verify/);
 });
 
-test('AC-25 packed release includes its license, loads without adjacent dependencies and keeps benchmark offline', async () => {
+test('AC-25 CC-AC-1 packed release loads with its archived dependency and keeps benchmark offline', async () => {
   const scratch = await mkdtemp(join(tmpdir(), 'magic8ball-package-'));
   try {
     const npm = process.env.npm_execpath;
@@ -78,6 +78,18 @@ test('AC-25 packed release includes its license, loads without adjacent dependen
       assert.equal(pkg.peerDependenciesMeta[name].optional, true);
       assert.equal(pkg.dependencies?.[name], undefined);
     }
+    assert.deepEqual(Object.keys(pkg.dependencies), ['@neruok/pi-common']);
+    const commonRoot = fileURLToPath(new URL('../', import.meta.resolve('@neruok/pi-common/settings')));
+    const commonArchive = join(scratch, 'common-archive');
+    await mkdir(commonArchive);
+    const commonOutput = await run(npm ? process.execPath : 'npm', [...(npm ? [npm] : []), 'pack', '--ignore-scripts', '--json', '--pack-destination', commonArchive], { cwd: commonRoot });
+    const commonReport = JSON.parse(commonOutput.stdout);
+    const [commonPack] = Array.isArray(commonReport) ? commonReport : Object.values(commonReport);
+    assert.equal(commonPack.bundled.length, 0);
+    const installed = join(extracted, 'node_modules/@neruok/pi-common');
+    await mkdir(installed, { recursive: true });
+    await run('tar', ['-xzf', join(commonArchive, commonPack.filename), '--strip-components=1', '-C', installed]);
+    assert.equal((await lstat(installed)).isSymbolicLink(), false);
     const entry = join(extracted, pkg.pi.extensions[0]);
     assert.ok(paths.includes(pkg.pi.extensions[0].replace(/^\.\//, '')));
     // Pi maps host imports for source TypeScript extensions. No dependency install,

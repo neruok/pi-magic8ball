@@ -1,5 +1,15 @@
 # @neruok/pi-magic8ball
 
+## Shared behavior
+
+This package pins `@neruok/pi-common@0.1.0` for model selection, reasoning support, settings transactions, and safe command reporting.
+Advisor and magic8ball also share completion mechanics. Domain workflows and result schemas remain extension-owned.
+`npm ci --ignore-scripts` installs the library from npm. No sibling checkout is required.
+Safe settings reports reach non-UI sessions without starting a model turn. Transcript viewing remains UI-only.
+Shared settings writes refuse foreign locks and immediate-parent symlinks. Explicit compaction reset still repairs malformed regular files.
+The library does not reclaim stale locks or guarantee power-loss durability. Inspect a failed save before retry.
+
+
 An advisory choice tool for Pi. A lightweight context builder collects neutral state. Jev or Clef then returns a choice distribution.
 
 The builder does not choose or rank responses. Private tools update extension-owned state with a fixed schema; final model prose is ignored. Schema validation cannot prove neutrality or factual accuracy.
